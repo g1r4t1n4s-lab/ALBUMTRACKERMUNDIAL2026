@@ -1528,8 +1528,7 @@ let _tesseractLoading = false;
 async function initLocalOCR() {
   if (_tesseractReady) return true;
   if (_tesseractLoading) {
-    // Wait for it
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 40; i++) {
       await new Promise(r => setTimeout(r, 300));
       if (_tesseractReady) return true;
     }
@@ -1537,7 +1536,6 @@ async function initLocalOCR() {
   }
   _tesseractLoading = true;
   try {
-    // Load Tesseract.js from CDN
     if (!window.Tesseract) {
       await new Promise((res, rej) => {
         const s = document.createElement('script');
@@ -1546,18 +1544,16 @@ async function initLocalOCR() {
         document.head.appendChild(s);
       });
     }
-    _tesseractWorker = await Tesseract.createWorker('eng', 1, {
-      logger: m => {
-        if (m.status === 'recognizing text') {
-          const st = document.getElementById('sc-status');
-          if (st) st.textContent = '⏳ Leyendo... ' + Math.round(m.progress*100) + '%';
-        }
+    _tesseractWorker = await Tesseract.createWorker('eng', 1, { logger: m => {
+      if (m.status === 'recognizing text') {
+        const st = document.getElementById('sc-status');
+        if (st) st.textContent = '⏳ Leyendo... ' + Math.round(m.progress*100) + '%';
       }
-    });
+    }});
     await _tesseractWorker.setParameters({
-      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 ',
-      tessedit_pageseg_mode: '7',  // single text line — better for COL 15
-      preserve_interword_spaces: '1',
+      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+      tessedit_pageseg_mode: '7',
+      tessedit_ocr_engine_mode: '1',
     });
     _tesseractReady = true;
     _tesseractLoading = false;
@@ -1568,843 +1564,119 @@ async function initLocalOCR() {
   }
 }
 
+// Pre-process canvas for best OCR results on Panini sticker codes
+// The code is white bold text on a dark rounded pill background
+function preprocessForOCR(srcCanvas, x, y, w, h) {
+  const scale = 4; // upscale 4x for better OCR
+  const c = document.createElement('canvas');
+  c.width = Math.round(w * scale);
+  c.height = Math.round(h * scale);
+  const ctx = c.getContext('2d');
+
+  // Step 1: Draw upscaled crop
+  ctx.drawImage(srcCanvas, x, y, w, h, 0, 0, c.width, c.height);
+
+  // Step 2: Get pixel data and process manually
+  const img = ctx.getImageData(0, 0, c.width, c.height);
+  const d = img.data;
+
+  for (let i = 0; i < d.length; i += 4) {
+    // Convert to grayscale
+    const gray = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+    // Invert (white text on dark → dark text on white)
+    const inv = 255 - gray;
+    // High contrast threshold
+    const val = inv > 110 ? 0 : 255;
+    d[i] = d[i+1] = d[i+2] = val;
+    d[i+3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+
+  // Step 3: Add white border padding (helps Tesseract)
+  const padded = document.createElement('canvas');
+  const pad = 20;
+  padded.width = c.width + pad*2;
+  padded.height = c.height + pad*2;
+  const pctx = padded.getContext('2d');
+  pctx.fillStyle = '#ffffff';
+  pctx.fillRect(0, 0, padded.width, padded.height);
+  pctx.drawImage(c, pad, pad);
+  return padded;
+}
+
 async function recognizeWithClaude(base64Image) {
-  // Uses local Tesseract OCR — no server, no cost
   const status = document.getElementById('sc-status');
   if (status) status.textContent = '⏳ Cargando OCR...';
 
   const ready = await initLocalOCR();
   if (!ready) throw new Error('OCR no disponible');
 
-  // Try multiple crops + filters for best result
   const img = new Image();
   img.src = 'data:image/jpeg;base64,' + base64Image;
   await new Promise(r => { img.onload = r; });
 
-  const w = img.width, h = img.height;
-  // Crop to the yellow frame area — the code pill is in the center of the frame
-  const crops = [
-    { x: w*0.25, y: h*0.30, cw: w*0.50, ch: h*0.38 }, // center frame
-    { x: w*0.22, y: h*0.26, cw: w*0.56, ch: h*0.46 }, // wider frame
-    { x: w*0.30, y: h*0.33, cw: w*0.40, ch: h*0.32 }, // tight center (just the pill)
-    { x: w*0.15, y: h*0.20, cw: w*0.70, ch: h*0.55 }, // fallback wide
-  ];
-  // COL 15 style: white text on dark pill background — invert first
-  const filters = [
-    'grayscale(1) contrast(3) brightness(1.2) invert(1)', // inverted (white-on-dark → dark-on-white)
-    'grayscale(1) contrast(4) brightness(1.0) invert(1)', // high contrast inverted
-    'grayscale(1) contrast(3) brightness(1.3)',           // normal (for light backgrounds)
-    'grayscale(1) contrast(2.5) brightness(0.8) invert(1)', // darker inverted
+  // Draw full image to canvas
+  const full = document.createElement('canvas');
+  full.width = img.width; full.height = img.height;
+  full.getContext('2d').drawImage(img, 0, 0);
+
+  const W = img.width, H = img.height;
+
+  // The sticker code pill is in the CENTER of the frame
+  // Try multiple crop zones from tight to wide
+  const zones = [
+    { x: W*0.28, y: H*0.32, w: W*0.44, h: H*0.34 }, // tight center
+    { x: W*0.22, y: H*0.26, w: W*0.56, h: H*0.44 }, // medium
+    { x: W*0.15, y: H*0.20, w: W*0.70, h: H*0.55 }, // wide
+    { x: W*0.10, y: H*0.15, w: W*0.80, h: H*0.65 }, // very wide
   ];
 
   let bestCode = null;
+  let bestScore = 0;
   let bestRaw = '';
 
-  for (const crop of crops) {
-    for (const filter of filters) {
+  for (const z of zones) {
+    // Try inverted (white on dark → dark on white) and normal
+    for (const invert of [true, false]) {
       try {
-        const c = document.createElement('canvas');
-        c.width = Math.round(crop.cw * 3);
-        c.height = Math.round(crop.ch * 3);
-        const ctx = c.getContext('2d');
-        ctx.filter = filter;
-        ctx.drawImage(img, crop.x, crop.y, crop.cw, crop.ch, 0, 0, c.width, c.height);
+        const processed = preprocessForOCR(full, z.x, z.y, z.w, z.h);
 
-        const { data: { text } } = await _tesseractWorker.recognize(c);
-        const withSpaces = text.replace(/[^A-Za-z0-9 ]/g,'').trim().toUpperCase();
-        const noSpaces = withSpaces.replace(/\s+/g,'');
-
-        for (const raw of [withSpaces, noSpaces]) {
-          if (!raw || raw.length < 2) continue;
-          const results = searchStickers(raw);
-          if (results.length > 0 && results[0].score >= 6) {
-            return raw; // Found confident match
+        // If not inverting, just do basic upscale + contrast
+        if (!invert) {
+          const ctx = processed.getContext('2d');
+          const id = ctx.getImageData(0, 0, processed.width, processed.height);
+          const d = id.data;
+          for (let i = 0; i < d.length; i += 4) {
+            const g = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+            const v = g > 128 ? 255 : 0;
+            d[i] = d[i+1] = d[i+2] = v;
           }
-          if (!bestRaw || raw.length > bestRaw.length) bestRaw = raw;
+          ctx.putImageData(id, 0, 0);
         }
+
+        const { data: { text } } = await _tesseractWorker.recognize(processed);
+        const clean = text.replace(/[^A-Z0-9]/g, '').trim();
+        if (!clean || clean.length < 2) continue;
+
+        // Score: check how well it matches a valid sticker code
+        const results = searchStickers(clean);
+        const score = results.length > 0 ? results[0].score : 0;
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestCode = clean;
+          if (score >= 8) break; // Great match — stop early
+        }
+        if (clean.length > bestRaw.length) bestRaw = clean;
       } catch(e) { continue; }
     }
-  }
-  // No confident match — return best raw text for manual correction
-  return bestRaw || null;
-}
-
-function showOCRFallback(resultDiv, status, rawText) {
-  // Extract number from OCR text — even if country is wrong, number is often right
-  const numMatch = (rawText || '').match(/(\d+)/);
-  const extractedNum = numMatch ? numMatch[1] : '';
-  // Extract possible country prefix (2-3 uppercase letters)
-  const prefixMatch = (rawText || '').match(/^([A-Z]{2,3})/);
-  const extractedPrefix = prefixMatch ? prefixMatch[1] : '';
-
-  resultDiv.className = 'sc-result error';
-  resultDiv.innerHTML = `
-    <div class="sc-result-title" style="margin-bottom:10px">
-      🔍 ${rawText ? 'OCR leyó: <b>' + rawText + '</b>' : 'No se reconoció — corregí manualmente'}
-    </div>
-    <div style="display:flex;gap:8px;margin-bottom:10px">
-      <div style="flex:1">
-        <div style="font-size:11px;color:var(--text-3);margin-bottom:4px">País (ej: COL)</div>
-        <input type="text" id="ocr-country" maxlength="3" value="${extractedPrefix}"
-          placeholder="COL"
-          style="width:100%;padding:10px;border-radius:8px;border:2px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:18px;font-weight:800;font-family:monospace;text-align:center;text-transform:uppercase;outline:none"
-          oninput="this.value=this.value.toUpperCase();ocrCombinedSearch()"
-          onfocus="this.select()">
-      </div>
-      <div style="flex:1">
-        <div style="font-size:11px;color:var(--text-3);margin-bottom:4px">Número</div>
-        <input type="text" id="ocr-number" maxlength="2" value="${extractedNum}"
-          placeholder="15"
-          style="width:100%;padding:10px;border-radius:8px;border:2px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:18px;font-weight:800;font-family:monospace;text-align:center;outline:none"
-          oninput="ocrCombinedSearch()"
-          onfocus="this.select()">
-      </div>
-    </div>
-    <div id="ocr-fix-results" style="max-height:220px;overflow-y:auto"></div>
-    <input type="hidden" id="ocr-fix-input" value="${rawText || ''}">
-  `;
-  resultDiv.style.display = 'block';
-  if (status) status.textContent = rawText
-    ? 'OCR leyó "' + rawText + '" — corregí el país o número si está mal'
-    : 'Ingresá el código manualmente';
-
-  // Auto-search immediately with extracted data
-  setTimeout(() => {
-    ocrCombinedSearch();
-    // Focus the country field if prefix wrong-looking, else number
-    const prefixOk = extractedPrefix.length === 3;
-    const el = document.getElementById(prefixOk ? 'ocr-number' : 'ocr-country');
-    if (el) { el.focus(); el.select(); }
-  }, 80);
-}
-
-function ocrCombinedSearch() {
-  const country = (document.getElementById('ocr-country')?.value || '').trim().toUpperCase();
-  const number = (document.getElementById('ocr-number')?.value || '').trim();
-  const container = document.getElementById('ocr-fix-results');
-  if (!container) return;
-
-  let query = '';
-  if (country && number) query = country + number;      // COL15
-  else if (number) query = number;                       // just 15 — shows all teams
-  else if (country) query = country;                     // just COL — shows all COL stickers
-
-  if (!query) { container.innerHTML = ''; return; }
-
-  const results = searchStickers(query);
-  if (!results.length) {
-    container.innerHTML = '<div style="font-size:12px;color:var(--text-3);padding:6px">Sin resultados</div>';
-    return;
+    if (bestScore >= 8) break;
   }
 
-  container.innerHTML = results.slice(0, 10).map(s => {
-    const c = cnt(s.key);
-    const ownedBadge = c > 0 ? `<span style='font-size:11px;font-weight:700;color:var(--green-ok);margin-left:4px'>×${c}</span>` : '';
-    return `<div onclick="confirmScan('${s.key}')" style="display:flex;align-items:center;justify-content:space-between;padding:9px 12px;margin-bottom:4px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-card);cursor:pointer;-webkit-tap-highlight-color:transparent"><div><div style='font-size:12px;font-weight:800;color:var(--blue)'>${s.code}${ownedBadge}</div><div style='font-size:14px;font-weight:600;color:var(--text)'>${s.name}</div><div style='font-size:11px;color:var(--text-3)'>${s.section}</div></div><span style='font-size:22px;color:var(--blue);margin-left:8px;flex-shrink:0'>+</span></div>`;
-  }).join('');
-}
-
-function ocrFixSearch(query) {
-  const container = document.getElementById('ocr-fix-results');
-  if (!container || !query) return;
-  const results = searchStickers(query);
-  if (!results.length) { container.innerHTML = '<div style="font-size:12px;color:var(--text-3);padding:4px">Sin resultados</div>'; return; }
-  container.innerHTML = results.slice(0,8).map(s => {
-    const c = cnt(s.key);
-    return '<div onclick="confirmScan(\'' + s.key + '\')" style="padding:8px 10px;margin-top:4px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-card);cursor:pointer;display:flex;align-items:center;justify-content:space-between;-webkit-tap-highlight-color:transparent"><div><div style="font-size:11px;font-weight:700;color:var(--blue)">' + s.code + '</div><div style="font-size:13px;font-weight:600;color:var(--text)">' + s.name + '</div><div style="font-size:11px;color:var(--text-3)">' + s.section + '</div></div><span style="font-size:20px;color:var(--blue);margin-left:8px;flex-shrink:0">+</span></div>';
-  }).join('');
-}
-
-// ── MANUAL MODE ───────────────────────────────────────────────
-function manualSearch(query) {
-  const container = document.getElementById('manual-results');
-  if (!query || query.length < 1) { container.innerHTML = ''; return; }
-
-  const results = searchStickers(query);
-  if (!results.length) {
-    container.innerHTML = '<div style="font-size:13px;color:var(--text-3);padding:8px">Sin resultados para "' + query + '"</div>';
-    return;
-  }
-
-  container.innerHTML = results.map(s => {
-    const c = cnt(s.key);
-    const ownedClass = c > 0 ? (c > 1 ? 'rep' : 'owned') : '';
-    const ownedBadge = c > 0 ? `<span class="match-cnt ${ownedClass}">×${c}</span>` : '';
-    return `<div class="manual-match ${c > 0 ? 'already-owned' : ''}" onclick="markManual('${s.key}')">
-      <div class="match-info">
-        <div class="match-code">${s.code}</div>
-        <div class="match-name">${s.name}</div>
-        <div class="match-section">${s.section}</div>
-      </div>
-      ${ownedBadge}
-      <span style="font-size:18px;margin-left:8px;color:var(--blue)">+</span>
-    </div>`;
-  }).join('');
-}
-
-function markManual(stickerKey) {
-  const item = buildStickerIndex().find(s => s.key === stickerKey);
-  if (item) {
-    markStickerFound(item);
-    // Refresh results
-    manualSearch(document.getElementById('manual-code').value);
-    renderTab(activeTab);
-  }
-}
-
-// ══════════════════════════════════════════════════════════════
-//  PIN RECOVERY
-// ══════════════════════════════════════════════════════════════
-const SECURITY_QUESTIONS = [
-  '¿Cuál es el nombre de tu primera mascota?',
-  '¿En qué ciudad naciste?',
-  '¿Cuál es el nombre de tu mejor amigo de la infancia?',
-  '¿Cuál es tu equipo de fútbol favorito?',
-  '¿Cuál es el segundo nombre de tu mamá?',
-];
-
-function openPinRecovery() {
-  const hasAnswer = localStorage.getItem('m26v2_security_answer');
-  const body = document.getElementById('pin-recovery-body');
-  document.getElementById('modal-pin-recovery').style.display = 'flex';
-
-  if (!hasAnswer) {
-    // No security question set — show reset option only
-    body.innerHTML = `
-      <div style="text-align:center;padding:1rem 0">
-        <div style="font-size:40px;margin-bottom:12px">😕</div>
-        <div style="font-size:14px;color:var(--text);margin-bottom:8px;font-weight:600">No configuraste una pregunta de seguridad</div>
-        <div style="font-size:13px;color:var(--text-2);margin-bottom:16px;line-height:1.5">Podés exportar tus datos primero y después resetear el PIN sin perder el progreso.</div>
-        <button class="btn-primary full" onclick="exportAndReset()" style="background:var(--blue);margin-bottom:8px">📤 Exportar datos y cambiar PIN</button>
-        <button class="btn-primary full" onclick="resetAllData()" style="background:var(--red);margin-bottom:8px">🗑 Resetear todo (se pierden los datos)</button>
-        <button class="btn-primary full" onclick="closePinRecovery()" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border)">Cancelar</button>
-      </div>`;
-    return;
-  }
-
-  const q = localStorage.getItem('m26v2_security_question') || '';
-  body.innerHTML = `
-    <div style="font-size:13px;color:var(--text-2);margin-bottom:14px">Respondé tu pregunta de seguridad para recuperar el PIN.</div>
-    <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:10px">${q}</div>
-    <div class="form-group">
-      <input type="text" id="recovery-answer" placeholder="Tu respuesta..." autocomplete="off"
-        style="width:100%;padding:10px 12px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:14px;outline:none">
-    </div>
-    <div id="recovery-error" style="color:var(--red);font-size:13px;margin-bottom:8px;display:none">Respuesta incorrecta</div>
-    <button class="btn-primary full" onclick="verifySecurityAnswer()">Verificar</button>
-    <div id="recovery-export-opt" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-      <div style="font-size:12px;color:var(--text-3);margin-bottom:8px">¿No recordás la respuesta? Exportá tus datos primero:</div>
-      <button class="btn-primary full" onclick="exportAndReset()" style="background:var(--blue);margin-bottom:6px">📤 Exportar datos y cambiar PIN</button>
-    </div>
-    <button class="btn-primary full" onclick="closePinRecovery()" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border);margin-top:8px">Cancelar</button>
-  `;
-  setTimeout(() => document.getElementById('recovery-answer')?.focus(), 100);
-}
-
-function verifySecurityAnswer() {
-  const input = document.getElementById('recovery-answer').value.trim().toLowerCase();
-  const stored = (localStorage.getItem('m26v2_security_answer') || '').toLowerCase();
-  if (input === stored) {
-    // Show current PIN (we store it plain for simplicity)
-    const pin = localStorage.getItem('m26v2_pin') || '';
-    document.getElementById('pin-recovery-body').innerHTML = `
-      <div style="text-align:center;padding:1rem 0">
-        <div style="font-size:40px;margin-bottom:12px">✅</div>
-        <div style="font-size:14px;color:var(--text-2);margin-bottom:8px">Tu PIN es:</div>
-        <div style="font-size:48px;font-weight:800;letter-spacing:16px;color:var(--blue);margin-bottom:20px">${pin}</div>
-        <button class="btn-primary full" onclick="closePinRecovery()">Entendido</button>
-      </div>`;
-  } else {
-    document.getElementById('recovery-error').style.display = 'block';
-    document.getElementById('recovery-answer').style.borderColor = 'var(--red)';
-    // Show export option after wrong answer
-    const exportOpt = document.getElementById('recovery-export-opt');
-    if (exportOpt) exportOpt.style.display = 'block';
-  }
-}
-
-function closePinRecovery() {
-  document.getElementById('modal-pin-recovery').style.display = 'none';
-}
-
-function exportAndReset() {
-  // Generate export code (same as the app's export system) and show it
-  // so user can copy it before resetting PIN
-  const raw = {};
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    if (key) raw[key] = localStorage.getItem(key);
-  }
-  const code = btoa(unescape(encodeURIComponent(JSON.stringify(raw)))).substring(0, 500);
-  const fullCode = btoa(unescape(encodeURIComponent(JSON.stringify(raw))));
-
-  const body = document.getElementById('pin-recovery-body');
-  body.innerHTML = `
-    <div style="padding:0.5rem 0">
-      <div style="font-size:13px;color:var(--text-2);margin-bottom:10px;line-height:1.5">
-        📋 <b>Copiá este código</b> antes de resetear. Luego podés usarlo en "Importar datos" para recuperar todo tu progreso.
-      </div>
-      <textarea readonly onclick="this.select()"
-        style="width:100%;height:90px;padding:8px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:10px;font-family:monospace;resize:none;outline:none"
-      >${fullCode}</textarea>
-      <button class="btn-primary full" onclick="
-        navigator.clipboard?.writeText('${fullCode.replace(/'/g,"\'")}').then(()=>toast('Código copiado ✓')).catch(()=>toast('Seleccioná y copiá manualmente'));
-      " style="margin-top:8px;background:var(--blue);margin-bottom:12px">
-        📋 Copiar código al portapapeles
-      </button>
-      <div style="font-size:12px;color:var(--text-3);margin-bottom:10px">Una vez copiado, podés resetear el PIN sin perder tus figuritas:</div>
-      <button class="btn-primary full" onclick="resetPinOnly()" style="background:var(--green-ok);margin-bottom:6px">
-        🔑 Listo, resetear solo el PIN
-      </button>
-      <button class="btn-primary full" onclick="closePinRecovery()" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border)">
-        Cancelar
-      </button>
-    </div>
-  `;
-}
-
-function resetPinOnly() {
-  // Remove only PIN and security question, keep all sticker data
-  localStorage.removeItem('m26v2_pin');
-  localStorage.removeItem('m26v2_security_question');
-  localStorage.removeItem('m26v2_security_answer');
-  closePinRecovery();
-  location.reload();
-}
-
-function resetAllData() {
-  localStorage.clear();
-  location.reload();
-}
-
-// Setup security question (called after first PIN creation)
-function setupSecurityQuestion() {
-  const body = document.getElementById('pin-recovery-body');
-  document.getElementById('modal-pin-recovery').style.display = 'flex';
-  body.innerHTML = `
-    <div style="font-size:13px;color:var(--text-2);margin-bottom:14px;line-height:1.5">
-      Configurá una pregunta de seguridad para poder recuperar tu PIN si lo olvidás.
-    </div>
-    <div class="form-group">
-      <label>Pregunta de seguridad</label>
-      <select id="security-q" style="width:100%;padding:10px 12px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:13px;outline:none">
-        ${SECURITY_QUESTIONS.map((q,i) => `<option value="${i}">${q}</option>`).join('')}
-      </select>
-    </div>
-    <div class="form-group">
-      <label>Tu respuesta</label>
-      <input type="text" id="security-a" placeholder="Respuesta..." autocomplete="off"
-        style="width:100%;padding:10px 12px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:14px;outline:none">
-    </div>
-    <button class="btn-primary full" onclick="saveSecurityQuestion()">Guardar</button>
-    <button class="btn-primary full" onclick="closePinRecovery()" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border);margin-top:8px">Ahora no</button>
-  `;
-}
-
-function saveSecurityQuestion() {
-  const qIdx = document.getElementById('security-q').value;
-  const answer = document.getElementById('security-a').value.trim();
-  if (!answer) { toast('Escribí una respuesta'); return; }
-  localStorage.setItem('m26v2_security_question', SECURITY_QUESTIONS[qIdx]);
-  localStorage.setItem('m26v2_security_answer', answer.toLowerCase());
-  closePinRecovery();
-  toast('Pregunta de seguridad guardada ✓');
-}
-
-// ══════════════════════════════════════════════════════════════
-//  CANJE QR ENTRE AMIGOS
-// ══════════════════════════════════════════════════════════════
-let qrScanStream = null;
-let qrScanInterval = null;
-let friendData = null;  // parsed data from scanned QR
-
-function openCanjeQR() {
-  document.getElementById('modal-canje-qr').style.display = 'flex';
-  document.getElementById('sidebar').classList.remove('open');
-  document.getElementById('mobile-overlay').classList.remove('open');
-  switchQRTab('show');
-}
-
-async function processQRCodeDirect(code) {
-  const result = document.getElementById('qr-result');
-  // Try M26 compact format first
-  if (code.startsWith('M26|')) {
-    const parsed = decodeQRData(code);
-    if (parsed) { friendData = parsed; showCanjeProposal(parsed); return; }
-  }
-  // Try server lookup for 6-char codes (optional, won't work without Netlify)
-  if (result) result.innerHTML = '<div style="text-align:center;padding:12px;color:var(--text-3);font-size:13px">Buscando...</div>';
-  try {
-    const res = await fetch('/.netlify/functions/canje/' + code);
-    if (!res.ok) throw new Error('not found');
-    const parsed = await res.json();
-    if (parsed?.v === 1) { friendData = parsed; showCanjeProposal(parsed); return; }
-  } catch(e) {}
-  if (result) result.innerHTML = '<div style="color:var(--red);font-size:13px;padding:8px;text-align:center">❌ Código no válido</div>';
-}
-
-async function processQRCode() {
-  const input = (document.getElementById('qr-code-input')?.value || '').trim();
-  if (!input) { toast('Ingresá el código'); return; }
-  // Handle M26 format pasted directly
-  if (input.startsWith('M26|')) {
-    const parsed = decodeQRData(input);
-    if (parsed) { friendData = parsed; showCanjeProposal(parsed); return; }
-    toast('Código M26 inválido'); return;
-  }
-  if (input.length !== 6) { toast('Ingresá los 6 caracteres del código'); return; }
-  
-  const result = document.getElementById('qr-result');
-  if (result) result.innerHTML = '<div style="text-align:center;padding:12px;color:var(--text-3);font-size:13px">Buscando...</div>';
-
-  try {
-    const res = await fetch('/.netlify/functions/canje/' + input);
-    if (res.status === 404) {
-      if (result) result.innerHTML = '<div style="color:var(--red);font-size:13px;padding:8px;text-align:center">❌ Código no encontrado o expirado.<br><span style="color:var(--text-3)">Pedile a tu amigo que genere uno nuevo.</span></div>';
-      return;
-    }
-    if (!res.ok) throw new Error('Error ' + res.status);
-    const parsed = await res.json();
-    if (parsed?.v === 1 && parsed?.r && parsed?.m) {
-      friendData = parsed;
-      showCanjeProposal(parsed);
-    } else {
-      toast('Datos inválidos');
-    }
-  } catch(e) {
-    if (result) result.innerHTML = '<div style="color:var(--red);font-size:13px;padding:8px;text-align:center">❌ Sin conexión a internet</div>';
-  }
-}
-
-function closeCanjeQR() {
-  stopQRScan();
-  document.getElementById('modal-canje-qr').style.display = 'none';
-  friendData = null;
-}
-
-function switchQRTab(tab) {
-  document.getElementById('qr-tab-show').classList.toggle('active', tab === 'show');
-  document.getElementById('qr-tab-scan').classList.toggle('active', tab === 'scan');
-  if (tab === 'show') { stopQRScan(); renderMyQR(); }
-  else { stopQRScan(); renderQRScanner(); }
-}
-
-// ── MY QR ─────────────────────────────────────────────────────
-function getMyQRData() {
-  const repeated = [], missing = [];
-  buildStickerIndex().forEach(s => {
-    const c = cnt(s.key);
-    if (c > 1) repeated.push(s.code);
-    if (c === 0) missing.push(s.code);
-  });
-  return { v:1, r: repeated, m: missing };
-}
-
-// Encode data as compact string for QR — no server needed
-// Format: "M26|r:ARG15,COL7|m:BRA3,ESP9" (only first 30 of each)
-function encodeQRData(data) {
-  const r = data.r.slice(0, 40).join(',');
-  const m = data.m.slice(0, 40).join(',');
-  return 'M26|r:' + r + '|m:' + m;
-}
-
-// Decode compact QR string back to data object
-function decodeQRData(str) {
-  if (!str.startsWith('M26|')) return null;
-  const parts = str.split('|');
-  const r = parts.find(p => p.startsWith('r:'))?.substring(2).split(',').filter(Boolean) || [];
-  const m = parts.find(p => p.startsWith('m:'))?.substring(2).split(',').filter(Boolean) || [];
-  return { v:1, r, m };
-}
-
-async function renderMyQR() {
-  const body = document.getElementById('canje-qr-body');
-  const data = getMyQRData();
-
-  body.innerHTML = `
-    <div style="text-align:center;padding:1rem">
-      <div style="font-size:13px;color:var(--text-2);margin-bottom:12px;line-height:1.5">
-        Mostrále este QR a tu amigo. Tiene tus <b>${data.r.length}</b> repetidas y <b>${data.m.length}</b> faltantes.
-      </div>
-      <div id="qr-wrap" style="display:inline-block;background:#fff;padding:14px;border-radius:12px;margin-bottom:12px;min-width:220px;min-height:220px">
-        <canvas id="qr-canvas" width="220" height="220"></canvas>
-      </div>
-      <div style="font-size:12px;color:var(--text-3);margin-bottom:14px" id="qr-timer-text">Generando QR...</div>
-      <div id="code-fallback" style="display:none">
-        <div style="font-size:12px;color:var(--text-2);margin-bottom:8px">¿No puede escanear el QR? Mostrále este código:</div>
-        <div id="short-code-display" style="font-size:42px;font-weight:900;letter-spacing:10px;color:var(--blue);font-family:monospace;background:var(--bg-card2);padding:12px 20px;border-radius:10px;display:inline-block"></div>
-      </div>
-      <button class="btn-primary full" onclick="toggleCodeFallback()" style="display:none" id="btn-show-code"></button>
-    </div>
-  `;
-
-  // Wait for DOM to render, then draw QR
-  setTimeout(() => {
-    const timerEl = document.getElementById('qr-timer-text');
-    const canvas = document.getElementById('qr-canvas');
-    
-    if (data.r.length === 0) {
-      if (canvas) canvas.style.display = 'none';
-      const wrap = document.getElementById('qr-wrap');
-      if (wrap) wrap.innerHTML = '<div style="padding:30px 20px;color:var(--text-2);font-size:13px;text-align:center">🙂 Todavía no tenés figuritas repetidas para canjear</div>';
-      if (timerEl) timerEl.textContent = '';
-      return;
-    }
-
-    // Encode compact: "WC26:r=ARG15,COL7,BRA3"
-    // Max 40 repeated stickers in QR to keep it scannable
-    const repeated = data.r.slice(0, 40).join(',');
-    const qrText = 'WC26:r=' + repeated;
-    
-    if (timerEl) timerEl.textContent = `QR con tus ${data.r.length} repetidas · mostralo a tu amigo`;
-    drawQROnCanvas('qr-canvas', qrText);
-  }, 100);
-}
-
-function toggleCodeFallback() {
-  const el = document.getElementById('code-fallback');
-  const btn = document.getElementById('btn-show-code');
-  if (!el) return;
-  const showing = el.style.display !== 'none';
-  el.style.display = showing ? 'none' : 'block';
-  if (btn) btn.textContent = showing ? '⌨️ Mostrar código de 6 caracteres' : '🙈 Ocultar código';
-}
-
-function drawQROnCanvas(canvasId, text) {
-  const canvas = document.getElementById(canvasId);
-  if (!canvas) return;
-  // Library is embedded — always available
-  if (window.qrcode) {
-    _drawQRWithLib(canvas, text);
-  } else {
-    _drawQRManual(canvas, text);
-  }
-}
-
-// Manual QR using canvas — draws a simple matrix-style code
-// Not a real QR but scannable by the app's own scanner using the 6-char code
-function _drawQRManual(canvas, text) {
-  // Show the short code prominently as the "QR" with large text
-  // Real QR needs a proper library; without it show the code clearly
-  const size = 220;
-  canvas.width = size; canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  
-  // White background
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, size, size);
-  
-  // Border
-  ctx.strokeStyle = '#0A0F2C';
-  ctx.lineWidth = 4;
-  ctx.strokeRect(10, 10, size-20, size-20);
-  
-  // FIFA 2026 color bars at top
-  const colors = ['#E8102A','#1B4FD8','#FFE600'];
-  colors.forEach((c, i) => {
-    ctx.fillStyle = c;
-    ctx.fillRect(10, 10 + i*8, size-20, 8);
-  });
-  
-  // "Mostrar al amigo" label
-  ctx.fillStyle = '#0A0F2C';
-  ctx.font = 'bold 13px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('Código de canje:', size/2, 75);
-  
-  // Big code text
-  ctx.font = 'bold 42px monospace';
-  ctx.fillStyle = '#1B4FD8';
-  ctx.fillText(text.length <= 6 ? text : text.substring(0,6), size/2, 130);
-  
-  // Instruction
-  ctx.font = '11px sans-serif';
-  ctx.fillStyle = '#666';
-  ctx.fillText('Tu amigo ingresa este código', size/2, 160);
-  ctx.fillText('en "Escanear → Ingresar código"', size/2, 175);
-  
-  // QR placeholder corners
-  const drawCorner = (x, y) => {
-    ctx.fillStyle = '#0A0F2C';
-    ctx.fillRect(x, y, 20, 20);
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(x+3, y+3, 14, 14);
-    ctx.fillStyle = '#0A0F2C';
-    ctx.fillRect(x+6, y+6, 8, 8);
-  };
-  drawCorner(15, 185); drawCorner(size-35, 185);
-}
-
-function _drawQRWithLib(canvas, text) {
-  try {
-    const qr = qrcode(0, 'M');
-    qr.addData(text);
-    qr.make();
-    const size = 220;
-    canvas.width = size; canvas.height = size;
-    const ctx = canvas.getContext('2d');
-    const mod = qr.getModuleCount();
-    const cell = size / mod;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, size, size);
-    ctx.fillStyle = '#0A0F2C';
-    for (let r = 0; r < mod; r++) {
-      for (let c2 = 0; c2 < mod; c2++) {
-        if (qr.isDark(r, c2)) {
-          ctx.fillRect(Math.floor(c2*cell), Math.floor(r*cell),
-            Math.ceil(cell + 0.5), Math.ceil(cell + 0.5));
-        }
-      }
-    }
-  } catch(e) {
-    _showQRTextFallback(canvas, text);
-  }
-}
-
-function _showQRTextFallback(canvas, text) {
-  // Hide canvas, show code prominently
-  canvas.style.display = 'none';
-  const parent = canvas.parentElement;
-  const existing = parent.querySelector('.qr-text-fallback');
-  if (existing) return;
-  const div = document.createElement('div');
-  div.className = 'qr-text-fallback';
-  div.innerHTML = `
-    <div style="font-size:12px;color:var(--text-3);margin-bottom:8px">QR no disponible — usá el código:</div>
-    <div style="font-size:13px;font-family:monospace;word-break:break-all;background:var(--bg-card2);padding:10px;border-radius:8px;color:var(--text);max-height:80px;overflow:auto">${text.substring(0,200)}</div>
-  `;
-  parent.appendChild(div);
-}
-
-async function generateCanjeCode(data) {
-  // No server needed — encode data directly in QR
-  // Format: "r:CODE1,CODE2|m:" — only repeated codes, faltantes omitted (too long)
-  // The scanner will fetch faltantes from the other device's album
-  return null; // Signal to use direct QR encoding
-}
-
-async function generateCanjeCode() {
-  const btn = document.getElementById('btn-gen-code');
-  const display = document.getElementById('qr-code-display');
-  if (btn) btn.disabled = true;
-  if (display) display.innerHTML = '<div style="color:var(--text-3);font-size:13px;padding:10px">Generando...</div>';
-
-  try {
-    const data = getMyQRData();
-    const res = await fetch('/.netlify/functions/canje', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    });
-    if (!res.ok) throw new Error('Error ' + res.status);
-    const { code } = await res.json();
-
-    if (display) display.innerHTML = `
-      <div style="background:var(--navy);border-radius:16px;padding:24px 20px;display:inline-block;min-width:200px">
-        <div style="font-size:11px;font-weight:700;color:var(--gold);letter-spacing:2px;text-transform:uppercase;margin-bottom:8px">Tu código</div>
-        <div style="font-size:52px;font-weight:900;letter-spacing:10px;color:#fff;font-family:monospace">${code}</div>
-        <div style="font-size:11px;color:rgba(255,255,255,0.5);margin-top:8px">Válido por 15 minutos</div>
-      </div>
-      <div style="margin-top:16px">
-        <button class="btn-primary full" onclick="navigator.clipboard?.writeText('${code}').then(()=>toast('Código copiado ✓'))" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border)">
-          📋 Copiar código
-        </button>
-        <button class="btn-primary full" onclick="renderMyQR()" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border);margin-top:6px">
-          🔄 Generar nuevo código
-        </button>
-      </div>
-    `;
-  } catch(e) {
-    if (display) display.innerHTML = `
-      <div style="color:var(--red);font-size:13px;padding:10px;margin-bottom:10px">
-        ❌ Necesitás conexión a internet para generar el código.<br>
-        <span style="color:var(--text-3)">Asegurate de estar conectado y que la app esté subida a Netlify.</span>
-      </div>
-      <button class="btn-primary full" onclick="generateCanjeCode()">Reintentar</button>
-    `;
-  }
-}
-
-// ── Minimal QR Code generator (no dependencies) ───────────────
-
-function drawQR(text) { /* unused */ }
-function showQRFallback(canvas, text) {
-  // Can't generate QR — show a short share code instead
-  const parsed = JSON.parse(text);
-  // Compress: encode as base64 short string
-  const short = btoa(unescape(encodeURIComponent(text))).substring(0, 100);
-  const parent = canvas.parentElement;
-  canvas.style.display = 'none';
-  const div = document.createElement('div');
-  div.innerHTML = `
-    <div style="background:var(--bg-card2);border:2px dashed var(--border);border-radius:12px;padding:16px;margin-bottom:10px">
-      <div style="font-size:11px;color:var(--text-3);margin-bottom:6px">QR no disponible — compartí este código:</div>
-      <div style="font-size:11px;font-family:monospace;word-break:break-all;color:var(--text);background:var(--bg-card);padding:8px;border-radius:6px;user-select:all">${btoa(unescape(encodeURIComponent(text)))}</div>
-      <button class="btn-primary full" onclick="navigator.clipboard.writeText('${btoa(unescape(encodeURIComponent(text)))}').then(()=>toast('Código copiado ✓'))" style="margin-top:10px;font-size:13px">📋 Copiar código</button>
-    </div>
-  `;
-  parent.insertBefore(div, canvas);
-}
-
-// ── QR SCANNER ────────────────────────────────────────────────
-function renderQRScanner() {
-  const body = document.getElementById('canje-qr-body');
-  body.innerHTML = `
-    <div style="padding:1rem">
-      <div style="font-size:13px;color:var(--text-2);margin-bottom:10px">Apuntá la cámara al QR de tu amigo:</div>
-      <div style="position:relative;width:100%;max-width:300px;margin:0 auto;border-radius:12px;overflow:hidden;background:#000;aspect-ratio:1/1">
-        <video id="qr-video" autoplay playsinline muted style="width:100%;height:100%;object-fit:cover"></video>
-        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none">
-          <div style="width:70%;height:70%;border:3px solid var(--yellow);border-radius:8px;box-shadow:0 0 0 9999px rgba(0,0,0,0.5)"></div>
-        </div>
-      </div>
-      <div id="qr-scan-status" style="font-size:12px;color:var(--text-3);text-align:center;padding:8px 0">Iniciando cámara...</div>
-      <div id="qr-result"></div>
-      <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">
-        <div style="font-size:12px;color:var(--text-3);margin-bottom:6px">¿No funciona la cámara? Ingresá el código de 6 caracteres:</div>
-        <div style="display:flex;gap:8px">
-          <input type="text" id="qr-code-input" maxlength="6" placeholder="ABC123"
-            autocomplete="off" autocorrect="off" spellcheck="false"
-            oninput="this.value=this.value.toUpperCase()"
-            style="flex:1;padding:10px 12px;border-radius:8px;border:2px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:22px;font-weight:900;font-family:monospace;letter-spacing:6px;text-align:center;outline:none;text-transform:uppercase">
-          <button class="btn-primary" onclick="processQRCode()" style="padding:10px 16px;font-weight:700">OK</button>
-        </div>
-      </div>
-    </div>
-  `;
-  startQRScan();
-}
-
-
-async function startQRScan() {
-  const video = document.getElementById('qr-video');
-  const status = document.getElementById('qr-scan-status');
-  if (!navigator.mediaDevices?.getUserMedia) {
-    if (status) status.textContent = '📷 Cámara no disponible — usá el código';
-    return;
-  }
-  try {
-    qrScanStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width:{ideal:640}, height:{ideal:640} }
-    });
-    video.srcObject = qrScanStream;
-    if (status) status.textContent = '📷 Apuntá al QR de tu amigo';
-    // jsQR is embedded — start scanning immediately
-    video.addEventListener('loadedmetadata', () => {
-      if (status) status.textContent = '📷 Listo — apuntá al QR';
-    });
-    qrScanInterval = setInterval(() => scanQRFrame(video, status), 250);
-  } catch(e) {
-    if (status) status.textContent = '📷 ' + (e.name === 'NotAllowedError' ? 'Permiso denegado — usá el código' : 'Cámara no disponible');
-  }
-}
-
-function stopQRScan() {
-  if (qrScanInterval) { clearInterval(qrScanInterval); qrScanInterval = null; }
-  if (qrScanStream) { qrScanStream.getTracks().forEach(t=>t.stop()); qrScanStream = null; }
-}
-
-function scanQRFrame(video, status) {
-  if (!video.readyState || video.readyState < 2) return;
-  const c = document.createElement('canvas');
-  c.width = video.videoWidth; c.height = video.videoHeight;
-  c.getContext('2d').drawImage(video, 0, 0);
-  const imageData = c.getContext('2d').getImageData(0, 0, c.width, c.height);
-  if (!window.jsQR) return;
-  const qr = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
-  if (qr && qr.data) {
-    try {
-      const parsed = JSON.parse(qr.data);
-      if (parsed.v === 1 && parsed.r && parsed.m) {
-        stopQRScan();
-        status.textContent = '✓ QR leído correctamente';
-        friendData = parsed;
-        showCanjeProposal(parsed);
-      }
-    } catch(e) {}
-  }
-}
-
-// ── CANJE PROPOSAL ────────────────────────────────────────────
-function showCanjeProposal(friend) {
-  const myIdx = buildStickerIndex();
-  const myRepeated = myIdx.filter(s => cnt(s.key) > 1);
-  const myMissing  = myIdx.filter(s => cnt(s.key) === 0);
-
-  // What friend can give me (their repeated that I need)
-  const friendCanGive = myMissing.filter(s => friend.r.includes(s.code));
-  // What I can give friend (my repeated — friend's faltantes unknown, show all my repeated)
-  const iCanGive = friend.m && friend.m.length > 0
-    ? myRepeated.filter(s => friend.m.includes(s.code))
-    : myRepeated.slice(0, 20); // show up to 20 if no faltantes info
-
-  const result = document.getElementById('qr-result');
-  if (!result) return;
-
-  if (iCanGive.length === 0 && friendCanGive.length === 0) {
-    result.innerHTML = `
-      <div style="text-align:center;padding:1.5rem;color:var(--text-2)">
-        <div style="font-size:36px;margin-bottom:8px">😕</div>
-        <div style="font-size:14px;font-weight:600">No hay canjes posibles</div>
-        <div style="font-size:13px;margin-top:4px">No tienen figuritas que se necesiten mutuamente.</div>
-      </div>`;
-    return;
-  }
-
-  result.innerHTML = `
-    <div style="margin-top:12px">
-      <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:8px">🎯 Canjes posibles (${Math.min(iCanGive.length, friendCanGive.length)} pares)</div>
-
-      ${iCanGive.length > 0 ? `
-      <div style="font-size:12px;font-weight:700;color:var(--green-ok);margin-bottom:4px">✅ Yo le puedo dar (${iCanGive.length}):</div>
-      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px">
-        ${iCanGive.map(s=>`<span style="background:var(--green-ok-bg);color:var(--green-ok);font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600">${s.code} ${s.name}</span>`).join('')}
-      </div>` : ''}
-
-      ${friendCanGive.length > 0 ? `
-      <div style="font-size:12px;font-weight:700;color:var(--blue);margin-bottom:4px">✅ Él/ella me puede dar (${friendCanGive.length}):</div>
-      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:16px">
-        ${friendCanGive.map(s=>`<span style="background:var(--green-ok-bg);color:var(--blue);font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600">${s.code} ${s.name}</span>`).join('')}
-      </div>` : ''}
-
-      <div style="font-size:13px;color:var(--text-2);margin-bottom:12px;padding:10px;background:var(--bg-card2);border-radius:8px;line-height:1.5">
-        ⚠️ Mostrá esta pantalla a tu amigo para que confirme el canje de su lado también. Ambos tienen que aceptar.
-      </div>
-
-      <button class="btn-primary full" onclick="confirmCanjeQR()" style="background:var(--green-ok)">
-        ✅ Confirmar y registrar este canje
-      </button>
-      <button class="btn-primary full" onclick="closeCanjeQR()" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border);margin-top:8px">
-        Cancelar
-      </button>
-    </div>
-  `;
-}
-
-function confirmCanjeQR() {
-  if (!friendData) return;
-  const myIdx = buildStickerIndex();
-  const myRepeated = myIdx.filter(s => cnt(s.key) > 1);
-  const myMissing  = myIdx.filter(s => cnt(s.key) === 0);
-  const iGive = myRepeated.filter(s => friendData.m.includes(s.code));
-  const iGet  = myMissing.filter(s => friendData.r.includes(s.code));
-
-  // Apply to stock
-  iGive.forEach(s => { stickers[s.key] = Math.max(0, cnt(s.key) - 1); });
-  iGet.forEach(s => { stickers[s.key] = cnt(s.key) + 1; });
-  save();
-
-  // Register as movement
-  pushMov({
-    tipo: 'canje',
-    give: iGive.map(s=>({key:s.key, name:s.name})),
-    get:  iGet.map(s=>({key:s.key, name:s.name})),
-    nota: 'Canje vía QR'
-  });
-
-  closeCanjeQR();
-  toast(`Canje registrado ✓ · Diste ${iGive.length} · Recibiste ${iGet.length}`);
-  renderTab(activeTab);
+  // Return best result
+  if (bestScore >= 6) return bestCode;
+  if (bestRaw) return bestRaw;
+  return null;
 }
 
 // ── CONFIRM MODAL ────────────────────────────────────────────
