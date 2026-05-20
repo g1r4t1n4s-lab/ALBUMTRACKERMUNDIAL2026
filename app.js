@@ -1,3 +1,4 @@
+// v7-quicksearch-clean
 // ============================================================
 //  MUNDIAL 2026 TRACKER v2 — app.js
 // ============================================================
@@ -1470,334 +1471,48 @@ function stopCamera() {
 
 // Tesseract removed — using Claude Vision API instead
 
-async function captureFrame() {
-  const video = document.getElementById('sc-video');
-  const canvas = document.getElementById('sc-canvas');
-  const status = document.getElementById('sc-status');
-  const resultDiv = document.getElementById('sc-result');
-
-  if (!video.srcObject) { status.textContent = '❌ Cámara no disponible'; return; }
-
-  document.getElementById('btn-capture').style.display = 'none';
-  document.getElementById('btn-again').style.display = 'block';
-
-  // Capture frame at full resolution
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(video, 0, 0);
-
-  // Convert to base64 JPEG for Claude Vision
-  const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
-
-  status.textContent = '🤖 Analizando con IA...';
-  resultDiv.style.display = 'none';
-
-  try {
-    status.textContent = '🤖 Analizando con IA...';
-    const code = await recognizeWithClaude(base64);
-    if (!code) throw new Error('no_code');
-
-    status.textContent = `🔍 IA detectó: "${code}"`;
-    const results = searchStickers(code);
-    if (results.length > 0 && results[0].score >= 6) {
-      showScanResult(results[0], resultDiv, status);
-    } else {
-      showOCRFallback(resultDiv, status, code);
-      const fixInp = document.getElementById('ocr-fix-input');
-      if (fixInp) {
-        const numPart = code.replace(/^[A-Z]{2,3}\s*/, '');
-        fixInp.value = numPart || code;
-        if (fixInp.value) ocrFixSearch(fixInp.value);
-      }
-    }
-  } catch(e) {
-    // Show specific error to help debug
-    const errMsg = e.message || 'Error desconocido';
-    status.textContent = '⚠ Error: ' + errMsg;
-    showOCRFallback(resultDiv, status, '');
-    toast('Error IA: ' + errMsg.substring(0, 60));
-  }
+// ── BUSCADOR RÁPIDO ──────────────────────────────────────────
+function openScanner() {
+  document.getElementById('modal-scanner').style.display = 'flex';
+  setTimeout(() => {
+    const inp = document.getElementById('quick-search-input');
+    const res = document.getElementById('quick-results');
+    if (inp) inp.value = '';
+    if (res) res.innerHTML = renderQuickGrid();
+    if (inp) inp.focus();
+  }, 50);
 }
-
-// ── GOOGLE VISION OCR + LOCAL TESSERACT FALLBACK ────────────
-let _tesseractWorker = null;
-let _tesseractReady = false;
-let _tesseractLoading = false;
-
-function getVisionKey() {
-  return localStorage.getItem('m26_vision_key') || '';
+function closeScanner() { document.getElementById('modal-scanner').style.display = 'none'; }
+function renderQuickGrid() {
+  const missing = [];
+  ALBUM_DATA.teams.forEach(team => { team.players.forEach(p => { const key = team.flag + p.num; if (!cnt(key)) missing.push({ key, code: key, name: p.name, section: team.name }); }); });
+  if (!missing.length) return '<div style="padding:20px;text-align:center;color:var(--text-3)">¡Álbum completo! 🏆</div>';
+  return '<div style="padding:6px 4px 4px;font-size:11px;color:var(--text-3);font-weight:600">TUS PRÓXIMAS FALTANTES</div>' + missing.slice(0,40).map(s=>quickResultRow(s)).join('');
 }
-
-function openVisionSetup() {
-  const key = getVisionKey();
-  const body = document.getElementById('vision-setup-body');
-  document.getElementById('modal-vision-setup').style.display = 'flex';
-  document.getElementById('sidebar').classList.remove('open');
-  document.getElementById('mobile-overlay').classList.remove('open');
-
-  body.innerHTML = `
-    <div style="font-size:13px;color:var(--text-2);margin-bottom:14px;line-height:1.6">
-      Con <b>Gemini AI</b> el escáner reconoce los códigos con mucha más precisión.<br><br>
-      <b>100% gratis</b> · 1500 escaneos/día · Sin tarjeta de crédito.<br><br>
-      Obtenela en <a href="https://aistudio.google.com/apikey" target="_blank" style="color:var(--blue)">aistudio.google.com/apikey</a> →
-      "Get API key" → "Create API key".
-    </div>
-    ${key ? `<div style="font-size:12px;color:var(--green-ok);margin-bottom:10px">✅ API key configurada (${key.substring(0,8)}...)</div>` : ''}
-    <div class="form-group">
-      <label>API Key de Google Cloud Vision</label>
-      <input type="text" id="vision-key-input" value="${key}"
-        placeholder="AIzaSy... (de aistudio.google.com)"
-        style="width:100%;padding:10px 12px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:13px;font-family:monospace;outline:none">
-    </div>
-    <div style="font-size:11px;color:var(--text-3);margin-bottom:14px">
-      La key se guarda solo en tu dispositivo, nunca se envía a ningún servidor nuestro.
-    </div>
-    <button class="btn-primary full" onclick="saveVisionKey()" style="margin-bottom:8px">Guardar key</button>
-    ${key ? `<button class="btn-primary full" onclick="clearVisionKey()" style="background:var(--red)">Borrar key</button>` : ''}
-  `;
-  setTimeout(() => document.getElementById('vision-key-input')?.focus(), 100);
+function quickSearch(q) {
+  const container = document.getElementById('quick-results');
+  if (!container) return;
+  const query = (q||'').trim();
+  if (!query) { container.innerHTML = renderQuickGrid(); return; }
+  const qLow = query.toLowerCase(), qUp = query.toUpperCase().replace(/\s+/g,'');
+  const results = [];
+  ALBUM_DATA.teams.forEach(team => { team.players.forEach(p => { const code = team.flag+p.num; if (p.name.toLowerCase().includes(qLow)||code.includes(qUp)||team.name.toLowerCase().includes(qLow)) results.push({key:code,code,name:p.name,section:team.name}); }); });
+  [...(ALBUM_DATA.intro?.items||[]),...(ALBUM_DATA.especiales?.items||[]),...(ALBUM_DATA.cocacola?.items||[])].forEach(s=>{ if(s.code.includes(qUp)||s.name.toLowerCase().includes(qLow)) results.push({key:s.code,code:s.code,name:s.name,section:'Especiales'}); });
+  container.innerHTML = results.length ? results.slice(0,50).map(s=>quickResultRow(s)).join('') : `<div style="padding:20px;text-align:center;color:var(--text-3)">Sin resultados para "${query}"</div>`;
 }
-
-function saveVisionKey() {
-  const val = document.getElementById('vision-key-input')?.value?.trim();
-  if (!val || !val.startsWith('AIza')) { toast('Key inválida — debe empezar con AIza...'); return; }
-  localStorage.setItem('m26_vision_key', val);
-  closeVisionSetup();
-  toast('✅ API key guardada — el escáner ahora usa Google Vision');
+function quickResultRow(s) {
+  const c = cnt(s.key), sk = s.key.replace(/[^a-z0-9]/gi,'-');
+  const badge = c>0 ? `<span style="background:var(--blue);color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px">×${c}</span>` : '';
+  return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 8px;border-bottom:1px solid var(--border);gap:8px"><div style="flex:1;min-width:0"><div style="font-size:11px;font-weight:800;color:var(--blue)">${s.code} ${badge}</div><div style="font-size:14px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.name}</div><div style="font-size:11px;color:var(--text-3)">${s.section}</div></div><div style="display:flex;align-items:center;gap:6px;flex-shrink:0"><button onclick="quickAdd('${s.key}',-1)" style="width:30px;height:30px;border-radius:50%;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:16px;cursor:pointer">−</button><span id="qty-${sk}" style="font-size:15px;font-weight:700;min-width:20px;text-align:center;color:${c>0?'var(--blue)':'var(--text-3)'}">${c}</span><button onclick="quickAdd('${s.key}',1)" style="width:30px;height:30px;border-radius:50%;border:none;background:var(--blue);color:#fff;font-size:16px;cursor:pointer">+</button></div></div>`;
 }
-
-function clearVisionKey() {
-  localStorage.removeItem('m26_vision_key');
-  closeVisionSetup();
-  toast('API key eliminada — usando OCR local');
+function quickAdd(key, delta) {
+  stickers[key] = Math.max(0, cnt(key)+delta); save();
+  const el = document.getElementById('qty-'+key.replace(/[^a-z0-9]/gi,'-'));
+  if (el) { el.textContent = stickers[key]; el.style.color = stickers[key]>0?'var(--blue)':'var(--text-3)'; }
+  if (activeTab==='home') renderTab('home');
 }
+function showScanResult(s,r,st){ if(r){r.style.display='block';} }
 
-function closeVisionSetup() {
-  document.getElementById('modal-vision-setup').style.display = 'none';
-}
-
-// ── GEMINI VISION (free tier, no credit card) ────────────────
-async function recognizeWithGoogleVision(base64Image, apiKey) {
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            {
-              inline_data: {
-                mime_type: 'image/jpeg',
-                data: base64Image
-              }
-            },
-            {
-              text: `This is the BACK of a Panini FIFA World Cup 2026 sticker. There is a code printed on it identifying the sticker.
-
-Code formats:
-- Players: COUNTRY_ABBR + NUMBER (e.g. ARG15, COL15, BRA9, GER8, ESP7)
-- Specials: FWC + number (e.g. FWC00, FWC1, FWC9)
-- Cracks: C + number (e.g. C1, C14)
-- Coca-Cola: CC + number (e.g. CC1, CC14)
-
-Valid country codes: ARG BRA COL URU PAR ECU MEX USA CAN CRC PAN CUW HAI ESP FRA GER ENG POR NED BEL ITA CRO SUI AUT NOR SWE CZE SCO WAL TUR BIH MAR SEN GHA EGY TUN ALG RSA CIV CPV COD KOR JPN AUS KSA IRN IRQ JOR QAT UZB NZL
-
-Reply with ONLY the code in uppercase, no spaces (e.g. COL15). If you cannot read any code clearly, reply: NOCODE`
-            }
-          ]
-        }],
-        generationConfig: { maxOutputTokens: 20, temperature: 0 }
-      })
-    }
-  );
-
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    const msg = err.error?.message || ('HTTP ' + response.status);
-    if (response.status === 400 || response.status === 401 || response.status === 403) {
-      throw new Error('API key inválida — revisá en "Configurar IA"');
-    }
-    throw new Error('Gemini error: ' + msg.substring(0, 80));
-  }
-
-  const data = await response.json();
-  const text = (data.candidates?.[0]?.content?.parts?.[0]?.text || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-  if (!text || text === 'NOCODE' || text.length < 2 || text.length > 7) return null;
-  return text;
-}
-
-// Extract a valid sticker code from raw OCR text
-function extractStickerCode(rawText) {
-  if (!rawText) return null;
-  const clean = rawText.toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').trim();
-  const lines = clean.split(/[]+/).filter(l => l.length > 0);
-
-  // Try each token and combination
-  const candidates = [];
-  for (let i = 0; i < lines.length; i++) {
-    candidates.push(lines[i]);
-    if (i + 1 < lines.length) candidates.push(lines[i] + lines[i+1]);
-  }
-  candidates.push(clean.replace(/\s+/g,''));
-
-  // Score each candidate against sticker database
-  let best = null, bestScore = 0;
-  for (const c of candidates) {
-    if (c.length < 2 || c.length > 7) continue;
-    const results = searchStickers(c);
-    if (results.length > 0 && results[0].score > bestScore) {
-      bestScore = results[0].score;
-      best = c;
-      if (bestScore >= 9) break;
-    }
-  }
-  if (bestScore >= 5) return best;
-
-  // Fuzzy: find any token that looks like ABBR+NUM
-  const match = clean.replace(/[\n ]+/g,'').match(/([A-Z]{2,3})(\d{1,2})/);if (match) return match[1] + match[2];
-
-  return lines[0] || null;
-}
-
-// ── TESSERACT LOCAL FALLBACK ──────────────────────────────────
-async function initLocalOCR() {
-  if (_tesseractReady) return true;
-  if (_tesseractLoading) {
-    for (let i = 0; i < 40; i++) {
-      await new Promise(r => setTimeout(r, 300));
-      if (_tesseractReady) return true;
-    }
-    return false;
-  }
-  _tesseractLoading = true;
-  try {
-    if (!window.Tesseract) {
-      await new Promise((res, rej) => {
-        const s = document.createElement('script');
-        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js';
-        s.onload = res; s.onerror = rej;
-        document.head.appendChild(s);
-      });
-    }
-    _tesseractWorker = await Tesseract.createWorker('eng', 1, { logger: m => {
-      if (m.status === 'recognizing text') {
-        const st = document.getElementById('sc-status');
-        if (st) st.textContent = '⏳ Leyendo... ' + Math.round(m.progress*100) + '%';
-      }
-    }});
-    await _tesseractWorker.setParameters({
-      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
-      tessedit_pageseg_mode: '7',
-    });
-    _tesseractReady = true;
-    _tesseractLoading = false;
-    return true;
-  } catch(e) {
-    _tesseractLoading = false;
-    throw new Error('No se pudo cargar OCR: ' + e.message);
-  }
-}
-
-async function recognizeWithTesseract(base64Image) {
-  const ready = await initLocalOCR();
-  if (!ready) throw new Error('OCR local no disponible');
-
-  const img = new Image();
-  img.src = 'data:image/jpeg;base64,' + base64Image;
-  await new Promise(r => { img.onload = r; });
-
-  const W = img.width, H = img.height;
-  const full = document.createElement('canvas');
-  full.width = W; full.height = H;
-  full.getContext('2d').drawImage(img, 0, 0);
-
-  const zones = [
-    { x: W*0.25, y: H*0.28, w: W*0.50, h: H*0.40 },
-    { x: W*0.18, y: H*0.20, w: W*0.64, h: H*0.56 },
-    { x: W*0.10, y: H*0.12, w: W*0.80, h: H*0.70 },
-  ];
-
-  let bestRaw = '', bestScore = 0, bestCode = null;
-
-  for (const z of zones) {
-    for (const invert of [true, false]) {
-      try {
-        const scale = 4;
-        const c = document.createElement('canvas');
-        c.width = Math.round(z.w * scale);
-        c.height = Math.round(z.h * scale);
-        const ctx = c.getContext('2d');
-        ctx.drawImage(full, z.x, z.y, z.w, z.h, 0, 0, c.width, c.height);
-        const id = ctx.getImageData(0, 0, c.width, c.height);
-        const d = id.data;
-        for (let i = 0; i < d.length; i += 4) {
-          let g = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
-          if (invert) g = 255 - g;
-          const v = g > 110 ? 255 : 0;
-          d[i] = d[i+1] = d[i+2] = v; d[i+3] = 255;
-        }
-        ctx.putImageData(id, 0, 0);
-
-        const { data: { text } } = await _tesseractWorker.recognize(c);
-        const code = extractStickerCode(text);
-        if (code) {
-          const results = searchStickers(code);
-          const score = results.length > 0 ? results[0].score : 0;
-          if (score > bestScore) { bestScore = score; bestCode = code; }
-          if (bestScore >= 8) break;
-        }
-        const raw = text.replace(/[^A-Z0-9]/g,'').trim();
-        if (raw.length > bestRaw.length) bestRaw = raw;
-      } catch(e) { continue; }
-    }
-    if (bestScore >= 8) break;
-  }
-  if (bestScore >= 5) return bestCode;
-  return bestRaw || null;
-}
-
-// ── MAIN ENTRY POINT ─────────────────────────────────────────
-async function recognizeWithClaude(base64Image) {
-  const status = document.getElementById('sc-status');
-  const visionKey = getVisionKey();
-
-  if (visionKey) {
-    if (status) status.textContent = '🤖 Analizando con Gemini...';
-    try {
-      const code = await recognizeWithGoogleVision(base64Image, visionKey);
-      return code;
-    } catch(e) {
-      if (e.message.includes('inválida')) throw e;
-      if (status) status.textContent = '⚠ Gemini falló, usando OCR local...';
-    }
-  } else {
-    // No key — show prompt to configure
-    if (status) status.textContent = '⚙️ Configurá Gemini para mejor reconocimiento';
-    const result = document.getElementById('sc-result');
-    if (result) {
-      result.style.display = 'block';
-      result.className = 'sc-result error';
-      result.innerHTML = `
-        <div class="sc-result-title">⚙️ Configurá la IA para mejor reconocimiento</div>
-        <div style="font-size:13px;color:var(--text-2);margin:8px 0;line-height:1.5">
-          Obtené una key gratis en <b>aistudio.google.com</b> y el escáner va a reconocer los códigos con mucha más precisión.
-        </div>
-        
-        <div style="font-size:12px;color:var(--text-3);text-align:center;margin-bottom:8px">— o —</div>
-        <div style="font-size:12px;color:var(--text-2);margin-bottom:6px">Ingresá el código manualmente:</div>
-      `;
-      // Show OCR fallback below
-      showOCRFallback(result, null, '');
-      return null;
-    }
-  }
-
-  // Fallback to Tesseract
-  if (status) status.textContent = '⏳ Cargando OCR local...';
-  return recognizeWithTesseract(base64Image);
-}
 
 // ── CONFIRM MODAL ────────────────────────────────────────────
 let _confirmCallback = null;
@@ -1826,29 +1541,6 @@ function resetCapture() {
   document.getElementById('sc-status').textContent = '📷 Listo — capturá el código del dorso';
 }
 
-// ── SHOW SCAN RESULT ─────────────────────────────────────────
-function showScanResult(sticker, resultDiv, status) {
-  if (!resultDiv) return;
-  const c = cnt(sticker.key);
-  const owned = c > 0 ? `<span style="font-size:12px;color:var(--yellow);margin-left:6px">Ya tenés ×${c}</span>` : '';
-  resultDiv.className = 'sc-result success';
-  resultDiv.style.display = 'block';
-  resultDiv.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between">
-      <div>
-        <div style="font-size:12px;font-weight:800;color:var(--blue);margin-bottom:2px">${sticker.code}${owned}</div>
-        <div style="font-size:16px;font-weight:700;color:var(--text)">${sticker.name}</div>
-        <div style="font-size:12px;color:var(--text-3)">${sticker.section}</div>
-      </div>
-      <button onclick="confirmScan('${sticker.key}')"
-        style="background:var(--green-ok);color:#fff;border:none;border-radius:10px;padding:10px 18px;font-size:15px;font-weight:700;cursor:pointer;flex-shrink:0;margin-left:10px">
-        + Agregar
-      </button>
-    </div>
-  `;
-  if (status) status.textContent = `✅ Detectado: ${sticker.code} — ${sticker.name}`;
-}
-
 // ── TOAST ────────────────────────────────────────────────────
 function toast(msg) {
   const t = document.getElementById('toast');
@@ -1866,4 +1558,6 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-del').addEventListener('click', pinDel);
   initLogin();
 });
+if('serviceWorker' in navigator){window.addEventListener('load',()=>{navigator.serviceWorker.register('/sw.js').catch(()=>{});});}
+
 if('serviceWorker' in navigator){window.addEventListener('load',()=>{navigator.serviceWorker.register('./sw.js').catch(()=>{});});}
