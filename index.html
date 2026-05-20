@@ -164,7 +164,9 @@
       <input type="text" id="quick-search-input" placeholder="Buscá jugador, país o código (ej: Messi, COL, ARG17)..."
         autocomplete="off" autocorrect="off" spellcheck="false"
         style="width:100%;padding:12px 14px;border-radius:10px;border:2px solid var(--blue);background:var(--bg-card2);color:var(--text);font-size:15px;outline:none;box-sizing:border-box"
-        oninput="quickSearch(this.value)">
+        oninput="quickSearch(this.value)"
+        onkeyup="quickSearch(this.value)"
+        onchange="quickSearch(this.value)">
     </div>
     <div id="quick-results" style="flex:1;overflow-y:auto;padding:0 10px 10px"></div>
   </div>
