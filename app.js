@@ -2451,4 +2451,4 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-del').addEventListener('click', pinDel);
   initLogin();
 });
-if('serviceWorker' in navigator){window.addEventListener('load',()=>{navigator.serviceWorker.register('/sw.js').catch(()=>{});});}
+if('serviceWorker' in navigator){window.addEventListener('load',()=>{navigator.serviceWorker.register('./sw.js').catch(()=>{});});}
