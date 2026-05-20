@@ -1521,6 +1521,7 @@ let qrScanInterval = null;
 let friendData = null;      // data scanned from friend's QR
 let dealGive = [];          // stickers I will give
 let dealGet = [];           // stickers I will receive
+let pendingDeal = null;     // deal proposal waiting for acceptance
 
 // ── QR DATA ENCODING ─────────────────────────────────────────
 function encodeQRData(data) {
@@ -1849,7 +1850,7 @@ function generateDealQR() {
 }
 
 function showDealConfirmation(deal) {
-  // deal.give = what proposer gives (I receive), deal.get = what proposer receives (I give)
+  pendingDeal = deal; // Store in global — no need to pass via onclick
   const body = document.getElementById('canje-qr-body');
   body.innerHTML = `
     <div style="padding:1rem">
@@ -1862,7 +1863,7 @@ function showDealConfirmation(deal) {
           📤 Vos das: <span style="color:var(--text)">${deal.get.join(', ')||'—'}</span>
         </div>
       </div>
-      <button class="btn-primary full" onclick="acceptAndShowConfirmQR(${JSON.stringify(deal).replace(/"/g,'&quot;')})" style="background:var(--green-ok);margin-bottom:8px">
+      <button class="btn-primary full" onclick="acceptAndShowConfirmQR()" style="background:var(--green-ok);margin-bottom:8px">
         ✅ Aceptar y generar QR de confirmación
       </button>
       <button class="btn-primary full" onclick="switchQRTab('scan')" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border)">
@@ -1872,12 +1873,13 @@ function showDealConfirmation(deal) {
   stopQRScan();
 }
 
-function acceptAndShowConfirmQR(deal) {
+function acceptAndShowConfirmQR() {
+  const deal = pendingDeal;
+  if (!deal) { toast('Error: no hay propuesta pendiente'); return; }
   // Apply deal to my album but keep modal open
   applyDeal(deal.get, deal.give, 'Canje vía QR (aceptado)', true);
-  // Generate confirmation QR for proposer to scan
-  // Confirmation QR = same M26D but with flipped give/get so proposer applies correctly
-  const confirmEncoded = encodeDeal(deal.get, deal.give); // flipped
+  // Generate confirmation QR — flipped so proposer applies their side correctly
+  const confirmEncoded = encodeDeal(deal.get, deal.give);
   const body = document.getElementById('canje-qr-body');
   body.innerHTML = `
     <div style="text-align:center;padding:1rem">
