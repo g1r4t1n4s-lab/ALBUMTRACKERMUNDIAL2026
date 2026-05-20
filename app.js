@@ -1520,11 +1520,149 @@ async function captureFrame() {
   }
 }
 
-// ── LOCAL OCR — Tesseract.js sin servidor ni costo ───────────
+// ── GOOGLE VISION OCR + LOCAL TESSERACT FALLBACK ────────────
 let _tesseractWorker = null;
 let _tesseractReady = false;
 let _tesseractLoading = false;
 
+function getVisionKey() {
+  // Check localStorage first (user can override), then use default
+  return localStorage.getItem('m26_vision_key') || 'AIzaSyCJ7IhOULt8p48xP-cnLmskAOdKcHVsI_M';
+}
+
+function openVisionSetup() {
+  const key = getVisionKey();
+  const body = document.getElementById('vision-setup-body');
+  document.getElementById('modal-vision-setup').style.display = 'flex';
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('mobile-overlay').classList.remove('open');
+
+  body.innerHTML = `
+    <div style="font-size:13px;color:var(--text-2);margin-bottom:14px;line-height:1.6">
+      Con <b>Gemini AI</b> el escáner reconoce los códigos con mucha más precisión.<br><br>
+      <b>100% gratis</b> · 1500 escaneos/día · Sin tarjeta de crédito.<br><br>
+      Obtenela en <a href="https://aistudio.google.com/apikey" target="_blank" style="color:var(--blue)">aistudio.google.com/apikey</a> →
+      "Get API key" → "Create API key".
+    </div>
+    ${key ? `<div style="font-size:12px;color:var(--green-ok);margin-bottom:10px">✅ API key configurada (${key.substring(0,8)}...)</div>` : ''}
+    <div class="form-group">
+      <label>API Key de Google Cloud Vision</label>
+      <input type="text" id="vision-key-input" value="${key}"
+        placeholder="AIzaSy... (de aistudio.google.com)"
+        style="width:100%;padding:10px 12px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:13px;font-family:monospace;outline:none">
+    </div>
+    <div style="font-size:11px;color:var(--text-3);margin-bottom:14px">
+      La key se guarda solo en tu dispositivo, nunca se envía a ningún servidor nuestro.
+    </div>
+    <button class="btn-primary full" onclick="saveVisionKey()" style="margin-bottom:8px">Guardar key</button>
+    ${key ? `<button class="btn-primary full" onclick="clearVisionKey()" style="background:var(--red)">Borrar key</button>` : ''}
+  `;
+  setTimeout(() => document.getElementById('vision-key-input')?.focus(), 100);
+}
+
+function saveVisionKey() {
+  const val = document.getElementById('vision-key-input')?.value?.trim();
+  if (!val || !val.startsWith('AIza')) { toast('Key inválida — debe empezar con AIza...'); return; }
+  localStorage.setItem('m26_vision_key', val);
+  closeVisionSetup();
+  toast('✅ API key guardada — el escáner ahora usa Google Vision');
+}
+
+function clearVisionKey() {
+  localStorage.removeItem('m26_vision_key');
+  closeVisionSetup();
+  toast('API key eliminada — usando OCR local');
+}
+
+function closeVisionSetup() {
+  document.getElementById('modal-vision-setup').style.display = 'none';
+}
+
+// ── GEMINI VISION (free tier, no credit card) ────────────────
+async function recognizeWithGoogleVision(base64Image, apiKey) {
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            {
+              inline_data: {
+                mime_type: 'image/jpeg',
+                data: base64Image
+              }
+            },
+            {
+              text: `This is the BACK of a Panini FIFA World Cup 2026 sticker. There is a code printed on it identifying the sticker.
+
+Code formats:
+- Players: COUNTRY_ABBR + NUMBER (e.g. ARG15, COL15, BRA9, GER8, ESP7)
+- Specials: FWC + number (e.g. FWC00, FWC1, FWC9)
+- Cracks: C + number (e.g. C1, C14)
+- Coca-Cola: CC + number (e.g. CC1, CC14)
+
+Valid country codes: ARG BRA COL URU PAR ECU MEX USA CAN CRC PAN CUW HAI ESP FRA GER ENG POR NED BEL ITA CRO SUI AUT NOR SWE CZE SCO WAL TUR BIH MAR SEN GHA EGY TUN ALG RSA CIV CPV COD KOR JPN AUS KSA IRN IRQ JOR QAT UZB NZL
+
+Reply with ONLY the code in uppercase, no spaces (e.g. COL15). If you cannot read any code clearly, reply: NOCODE`
+            }
+          ]
+        }],
+        generationConfig: { maxOutputTokens: 20, temperature: 0 }
+      })
+    }
+  );
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    const msg = err.error?.message || ('HTTP ' + response.status);
+    if (response.status === 400 || response.status === 401 || response.status === 403) {
+      throw new Error('API key inválida — revisá en "Configurar IA"');
+    }
+    throw new Error('Gemini error: ' + msg.substring(0, 80));
+  }
+
+  const data = await response.json();
+  const text = (data.candidates?.[0]?.content?.parts?.[0]?.text || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!text || text === 'NOCODE' || text.length < 2 || text.length > 7) return null;
+  return text;
+}
+
+// Extract a valid sticker code from raw OCR text
+function extractStickerCode(rawText) {
+  if (!rawText) return null;
+  const clean = rawText.toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').trim();
+  const lines = clean.split(/[]+/).filter(l => l.length > 0);
+
+  // Try each token and combination
+  const candidates = [];
+  for (let i = 0; i < lines.length; i++) {
+    candidates.push(lines[i]);
+    if (i + 1 < lines.length) candidates.push(lines[i] + lines[i+1]);
+  }
+  candidates.push(clean.replace(/\s+/g,''));
+
+  // Score each candidate against sticker database
+  let best = null, bestScore = 0;
+  for (const c of candidates) {
+    if (c.length < 2 || c.length > 7) continue;
+    const results = searchStickers(c);
+    if (results.length > 0 && results[0].score > bestScore) {
+      bestScore = results[0].score;
+      best = c;
+      if (bestScore >= 9) break;
+    }
+  }
+  if (bestScore >= 5) return best;
+
+  // Fuzzy: find any token that looks like ABBR+NUM
+  const match = clean.replace(/[\n ]+/g,'').match(/([A-Z]{2,3})(\d{1,2})/);if (match) return match[1] + match[2];
+
+  return lines[0] || null;
+}
+
+// ── TESSERACT LOCAL FALLBACK ──────────────────────────────────
 async function initLocalOCR() {
   if (_tesseractReady) return true;
   if (_tesseractLoading) {
@@ -1553,7 +1691,6 @@ async function initLocalOCR() {
     await _tesseractWorker.setParameters({
       tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
       tessedit_pageseg_mode: '7',
-      tessedit_ocr_engine_mode: '1',
     });
     _tesseractReady = true;
     _tesseractLoading = false;
@@ -1564,119 +1701,85 @@ async function initLocalOCR() {
   }
 }
 
-// Pre-process canvas for best OCR results on Panini sticker codes
-// The code is white bold text on a dark rounded pill background
-function preprocessForOCR(srcCanvas, x, y, w, h) {
-  const scale = 4; // upscale 4x for better OCR
-  const c = document.createElement('canvas');
-  c.width = Math.round(w * scale);
-  c.height = Math.round(h * scale);
-  const ctx = c.getContext('2d');
-
-  // Step 1: Draw upscaled crop
-  ctx.drawImage(srcCanvas, x, y, w, h, 0, 0, c.width, c.height);
-
-  // Step 2: Get pixel data and process manually
-  const img = ctx.getImageData(0, 0, c.width, c.height);
-  const d = img.data;
-
-  for (let i = 0; i < d.length; i += 4) {
-    // Convert to grayscale
-    const gray = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
-    // Invert (white text on dark → dark text on white)
-    const inv = 255 - gray;
-    // High contrast threshold
-    const val = inv > 110 ? 0 : 255;
-    d[i] = d[i+1] = d[i+2] = val;
-    d[i+3] = 255;
-  }
-  ctx.putImageData(img, 0, 0);
-
-  // Step 3: Add white border padding (helps Tesseract)
-  const padded = document.createElement('canvas');
-  const pad = 20;
-  padded.width = c.width + pad*2;
-  padded.height = c.height + pad*2;
-  const pctx = padded.getContext('2d');
-  pctx.fillStyle = '#ffffff';
-  pctx.fillRect(0, 0, padded.width, padded.height);
-  pctx.drawImage(c, pad, pad);
-  return padded;
-}
-
-async function recognizeWithClaude(base64Image) {
-  const status = document.getElementById('sc-status');
-  if (status) status.textContent = '⏳ Cargando OCR...';
-
+async function recognizeWithTesseract(base64Image) {
   const ready = await initLocalOCR();
-  if (!ready) throw new Error('OCR no disponible');
+  if (!ready) throw new Error('OCR local no disponible');
 
   const img = new Image();
   img.src = 'data:image/jpeg;base64,' + base64Image;
   await new Promise(r => { img.onload = r; });
 
-  // Draw full image to canvas
+  const W = img.width, H = img.height;
   const full = document.createElement('canvas');
-  full.width = img.width; full.height = img.height;
+  full.width = W; full.height = H;
   full.getContext('2d').drawImage(img, 0, 0);
 
-  const W = img.width, H = img.height;
-
-  // The sticker code pill is in the CENTER of the frame
-  // Try multiple crop zones from tight to wide
   const zones = [
-    { x: W*0.28, y: H*0.32, w: W*0.44, h: H*0.34 }, // tight center
-    { x: W*0.22, y: H*0.26, w: W*0.56, h: H*0.44 }, // medium
-    { x: W*0.15, y: H*0.20, w: W*0.70, h: H*0.55 }, // wide
-    { x: W*0.10, y: H*0.15, w: W*0.80, h: H*0.65 }, // very wide
+    { x: W*0.25, y: H*0.28, w: W*0.50, h: H*0.40 },
+    { x: W*0.18, y: H*0.20, w: W*0.64, h: H*0.56 },
+    { x: W*0.10, y: H*0.12, w: W*0.80, h: H*0.70 },
   ];
 
-  let bestCode = null;
-  let bestScore = 0;
-  let bestRaw = '';
+  let bestRaw = '', bestScore = 0, bestCode = null;
 
   for (const z of zones) {
-    // Try inverted (white on dark → dark on white) and normal
     for (const invert of [true, false]) {
       try {
-        const processed = preprocessForOCR(full, z.x, z.y, z.w, z.h);
-
-        // If not inverting, just do basic upscale + contrast
-        if (!invert) {
-          const ctx = processed.getContext('2d');
-          const id = ctx.getImageData(0, 0, processed.width, processed.height);
-          const d = id.data;
-          for (let i = 0; i < d.length; i += 4) {
-            const g = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
-            const v = g > 128 ? 255 : 0;
-            d[i] = d[i+1] = d[i+2] = v;
-          }
-          ctx.putImageData(id, 0, 0);
+        const scale = 4;
+        const c = document.createElement('canvas');
+        c.width = Math.round(z.w * scale);
+        c.height = Math.round(z.h * scale);
+        const ctx = c.getContext('2d');
+        ctx.drawImage(full, z.x, z.y, z.w, z.h, 0, 0, c.width, c.height);
+        const id = ctx.getImageData(0, 0, c.width, c.height);
+        const d = id.data;
+        for (let i = 0; i < d.length; i += 4) {
+          let g = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+          if (invert) g = 255 - g;
+          const v = g > 110 ? 255 : 0;
+          d[i] = d[i+1] = d[i+2] = v; d[i+3] = 255;
         }
+        ctx.putImageData(id, 0, 0);
 
-        const { data: { text } } = await _tesseractWorker.recognize(processed);
-        const clean = text.replace(/[^A-Z0-9]/g, '').trim();
-        if (!clean || clean.length < 2) continue;
-
-        // Score: check how well it matches a valid sticker code
-        const results = searchStickers(clean);
-        const score = results.length > 0 ? results[0].score : 0;
-
-        if (score > bestScore) {
-          bestScore = score;
-          bestCode = clean;
-          if (score >= 8) break; // Great match — stop early
+        const { data: { text } } = await _tesseractWorker.recognize(c);
+        const code = extractStickerCode(text);
+        if (code) {
+          const results = searchStickers(code);
+          const score = results.length > 0 ? results[0].score : 0;
+          if (score > bestScore) { bestScore = score; bestCode = code; }
+          if (bestScore >= 8) break;
         }
-        if (clean.length > bestRaw.length) bestRaw = clean;
+        const raw = text.replace(/[^A-Z0-9]/g,'').trim();
+        if (raw.length > bestRaw.length) bestRaw = raw;
       } catch(e) { continue; }
     }
     if (bestScore >= 8) break;
   }
+  if (bestScore >= 5) return bestCode;
+  return bestRaw || null;
+}
 
-  // Return best result
-  if (bestScore >= 6) return bestCode;
-  if (bestRaw) return bestRaw;
-  return null;
+// ── MAIN ENTRY POINT ─────────────────────────────────────────
+async function recognizeWithClaude(base64Image) {
+  const status = document.getElementById('sc-status');
+  const visionKey = getVisionKey();
+
+  if (visionKey) {
+    if (status) status.textContent = '🤖 Analizando con Google Vision...';
+    try {
+      const code = await recognizeWithGoogleVision(base64Image, visionKey);
+      return code;
+    } catch(e) {
+      if (e.message.includes('inválida')) throw e; // Bubble up key error
+      // Other errors: fall through to Tesseract
+      if (status) status.textContent = '⚠ Google Vision falló, usando OCR local...';
+    }
+  } else {
+    if (status) status.textContent = '⏳ Cargando OCR local...';
+  }
+
+  // Fallback to Tesseract
+  return recognizeWithTesseract(base64Image);
 }
 
 // ── CONFIRM MODAL ────────────────────────────────────────────
