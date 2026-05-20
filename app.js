@@ -1514,6 +1514,492 @@ function quickAdd(key, delta) {
 function showScanResult(s,r,st){ if(r){r.style.display='block';} }
 
 
+
+
+function openCanjeQR() {
+  document.getElementById('modal-canje-qr').style.display = 'flex';
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('mobile-overlay').classList.remove('open');
+  switchQRTab('show');
+}
+
+async function processQRCodeDirect(code) {
+  const result = document.getElementById('qr-result');
+  if (result) result.innerHTML = '<div style="text-align:center;padding:12px;color:var(--text-3);font-size:13px">Buscando datos...</div>';
+  try {
+    const res = await fetch('/.netlify/functions/canje/' + code);
+    if (res.status === 404) {
+      if (result) result.innerHTML = '<div style="color:var(--red);font-size:13px;padding:8px;text-align:center">❌ Código expirado. Pedile a tu amigo que genere uno nuevo.</div>';
+      return;
+    }
+    if (!res.ok) throw new Error('Error ' + res.status);
+    const parsed = await res.json();
+    if (parsed?.v === 1) { friendData = parsed; showCanjeProposal(parsed); }
+  } catch(e) {
+    if (result) result.innerHTML = '<div style="color:var(--red);font-size:13px;padding:8px;text-align:center">❌ Sin conexión</div>';
+  }
+}
+
+async function processQRCode() {
+  const input = (document.getElementById('qr-code-input')?.value || '').trim().toUpperCase();
+  if (!input || input.length !== 6) { toast('Ingresá los 6 caracteres del código'); return; }
+  
+  const result = document.getElementById('qr-result');
+  if (result) result.innerHTML = '<div style="text-align:center;padding:12px;color:var(--text-3);font-size:13px">Buscando...</div>';
+
+  try {
+    const res = await fetch('/.netlify/functions/canje/' + input);
+    if (res.status === 404) {
+      if (result) result.innerHTML = '<div style="color:var(--red);font-size:13px;padding:8px;text-align:center">❌ Código no encontrado o expirado.<br><span style="color:var(--text-3)">Pedile a tu amigo que genere uno nuevo.</span></div>';
+      return;
+    }
+    if (!res.ok) throw new Error('Error ' + res.status);
+    const parsed = await res.json();
+    if (parsed?.v === 1 && parsed?.r && parsed?.m) {
+      friendData = parsed;
+      showCanjeProposal(parsed);
+    } else {
+      toast('Datos inválidos');
+    }
+  } catch(e) {
+    if (result) result.innerHTML = '<div style="color:var(--red);font-size:13px;padding:8px;text-align:center">❌ Sin conexión a internet</div>';
+  }
+}
+
+function closeCanjeQR() {
+  stopQRScan();
+  document.getElementById('modal-canje-qr').style.display = 'none';
+  friendData = null;
+}
+
+function switchQRTab(tab) {
+  document.getElementById('qr-tab-show').classList.toggle('active', tab === 'show');
+  document.getElementById('qr-tab-scan').classList.toggle('active', tab === 'scan');
+  if (tab === 'show') { stopQRScan(); renderMyQR(); }
+  else { stopQRScan(); renderQRScanner(); }
+}
+
+// ── MY QR ─────────────────────────────────────────────────────
+function getMyQRData() {
+  const repeated = [], missing = [];
+  buildStickerIndex().forEach(s => {
+    const c = cnt(s.key);
+    if (c > 1) repeated.push(s.code);
+    if (c === 0) missing.push(s.code);
+  });
+  return { v:1, r: repeated, m: missing };
+}
+
+async function renderMyQR() {
+  const body = document.getElementById('canje-qr-body');
+  const data = getMyQRData();
+
+  body.innerHTML = `
+    <div style="text-align:center;padding:1rem">
+      <div style="font-size:13px;color:var(--text-2);margin-bottom:12px;line-height:1.5">
+        Mostrále este QR a tu amigo. Tiene tus <b>${data.r.length}</b> repetidas y <b>${data.m.length}</b> faltantes.
+      </div>
+      <div id="qr-wrap" style="display:inline-block;background:#fff;padding:14px;border-radius:12px;margin-bottom:12px;min-width:220px;min-height:220px">
+        <canvas id="qr-canvas" width="220" height="220"></canvas>
+      </div>
+      <div style="font-size:12px;color:var(--text-3);margin-bottom:14px" id="qr-timer-text">Generando QR...</div>
+      <div id="code-fallback" style="display:none">
+        <div style="font-size:12px;color:var(--text-2);margin-bottom:8px">¿No puede escanear el QR? Mostrále este código:</div>
+        <div id="short-code-display" style="font-size:42px;font-weight:900;letter-spacing:10px;color:var(--blue);font-family:monospace;background:var(--bg-card2);padding:12px 20px;border-radius:10px;display:inline-block"></div>
+      </div>
+      <button class="btn-primary full" onclick="toggleCodeFallback()" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border);margin-top:10px;font-size:13px;display:none" id="btn-show-code">
+        ⌨️ Mostrar código de 6 caracteres
+      </button>
+    </div>
+  `;
+
+  // Wait for DOM to render, then draw QR
+  setTimeout(async () => {
+    const timerEl = document.getElementById('qr-timer-text');
+    const codeEl = document.getElementById('short-code-display');
+    const btn = document.getElementById('btn-show-code');
+    const canvas = document.getElementById('qr-canvas');
+    
+    try {
+      // Try to get 6-char code from server
+      const code = await generateCanjeCode(data);
+      
+      if (code) {
+        // Server worked — draw QR with short code + show code display
+        if (codeEl) codeEl.textContent = code;
+        if (btn) btn.style.display = 'block';
+        if (timerEl) timerEl.textContent = 'El QR dura 15 minutos';
+        drawQROnCanvas('qr-canvas', code);
+      } else {
+        // No server — draw QR with the short data only (just repeated sticker codes)
+        // These are short codes like ["ARG15","COL7"] — much smaller than full JSON
+        const shortData = JSON.stringify({v:1, r: data.r.slice(0,20), m:[]});
+        if (timerEl) timerEl.textContent = data.r.length > 0 
+          ? 'QR con tus repetidas (sin código de servidor)' 
+          : 'No tenés repetidas aún';
+        if (data.r.length > 0) {
+          drawQROnCanvas('qr-canvas', shortData);
+        } else {
+          // Nothing to show — display friendly message
+          if (canvas) canvas.style.display = 'none';
+          const wrap = document.getElementById('qr-wrap');
+          if (wrap) wrap.innerHTML = '<div style="padding:30px 20px;color:var(--text-2);font-size:13px;text-align:center">Todavía no tenés figuritas repetidas para canjear 🙂</div>';
+          if (timerEl) timerEl.textContent = '';
+        }
+      }
+    } catch(e) {
+      if (timerEl) timerEl.textContent = 'Error: ' + e.message;
+    }
+  }, 100);
+}
+
+function toggleCodeFallback() {
+  const el = document.getElementById('code-fallback');
+  const btn = document.getElementById('btn-show-code');
+  if (!el) return;
+  const showing = el.style.display !== 'none';
+  el.style.display = showing ? 'none' : 'block';
+  if (btn) btn.textContent = showing ? '⌨️ Mostrar código de 6 caracteres' : '🙈 Ocultar código';
+}
+
+function drawQROnCanvas(canvasId, text) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  // Library is embedded — always available
+  if (window.qrcode) {
+    _drawQRWithLib(canvas, text);
+  } else {
+    _drawQRManual(canvas, text);
+  }
+}
+
+// Manual QR using canvas — draws a simple matrix-style code
+// Not a real QR but scannable by the app's own scanner using the 6-char code
+function _drawQRManual(canvas, text) {
+  // Show the short code prominently as the "QR" with large text
+  // Real QR needs a proper library; without it show the code clearly
+  const size = 220;
+  canvas.width = size; canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  
+  // White background
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, size, size);
+  
+  // Border
+  ctx.strokeStyle = '#0A0F2C';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(10, 10, size-20, size-20);
+  
+  // FIFA 2026 color bars at top
+  const colors = ['#E8102A','#1B4FD8','#FFE600'];
+  colors.forEach((c, i) => {
+    ctx.fillStyle = c;
+    ctx.fillRect(10, 10 + i*8, size-20, 8);
+  });
+  
+  // "Mostrar al amigo" label
+  ctx.fillStyle = '#0A0F2C';
+  ctx.font = 'bold 13px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('Código de canje:', size/2, 75);
+  
+  // Big code text
+  ctx.font = 'bold 42px monospace';
+  ctx.fillStyle = '#1B4FD8';
+  ctx.fillText(text.length <= 6 ? text : text.substring(0,6), size/2, 130);
+  
+  // Instruction
+  ctx.font = '11px sans-serif';
+  ctx.fillStyle = '#666';
+  ctx.fillText('Tu amigo ingresa este código', size/2, 160);
+  ctx.fillText('en "Escanear → Ingresar código"', size/2, 175);
+  
+  // QR placeholder corners
+  const drawCorner = (x, y) => {
+    ctx.fillStyle = '#0A0F2C';
+    ctx.fillRect(x, y, 20, 20);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(x+3, y+3, 14, 14);
+    ctx.fillStyle = '#0A0F2C';
+    ctx.fillRect(x+6, y+6, 8, 8);
+  };
+  drawCorner(15, 185); drawCorner(size-35, 185);
+}
+
+function _drawQRWithLib(canvas, text) {
+  try {
+    const qr = qrcode(0, 'M');
+    qr.addData(text);
+    qr.make();
+    const size = 220;
+    canvas.width = size; canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    const mod = qr.getModuleCount();
+    const cell = size / mod;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#0A0F2C';
+    for (let r = 0; r < mod; r++) {
+      for (let c2 = 0; c2 < mod; c2++) {
+        if (qr.isDark(r, c2)) {
+          ctx.fillRect(Math.floor(c2*cell), Math.floor(r*cell),
+            Math.ceil(cell + 0.5), Math.ceil(cell + 0.5));
+        }
+      }
+    }
+  } catch(e) {
+    _showQRTextFallback(canvas, text);
+  }
+}
+
+function _showQRTextFallback(canvas, text) {
+  // Hide canvas, show code prominently
+  canvas.style.display = 'none';
+  const parent = canvas.parentElement;
+  const existing = parent.querySelector('.qr-text-fallback');
+  if (existing) return;
+  const div = document.createElement('div');
+  div.className = 'qr-text-fallback';
+  div.innerHTML = `
+    <div style="font-size:12px;color:var(--text-3);margin-bottom:8px">QR no disponible — usá el código:</div>
+    <div style="font-size:13px;font-family:monospace;word-break:break-all;background:var(--bg-card2);padding:10px;border-radius:8px;color:var(--text);max-height:80px;overflow:auto">${text.substring(0,200)}</div>
+  `;
+  parent.appendChild(div);
+}
+
+async function generateCanjeCode(data) {
+  try {
+    const res = await fetch('/.netlify/functions/canje', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data || getMyQRData())
+    });
+    if (!res.ok) return null;
+    const { code } = await res.json();
+    return code;
+  } catch(e) { return null; }
+}
+
+async function generateCanjeCode() {
+  const btn = document.getElementById('btn-gen-code');
+  const display = document.getElementById('qr-code-display');
+  if (btn) btn.disabled = true;
+  if (display) display.innerHTML = '<div style="color:var(--text-3);font-size:13px;padding:10px">Generando...</div>';
+
+  try {
+    const data = getMyQRData();
+    const res = await fetch('/.netlify/functions/canje', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) throw new Error('Error ' + res.status);
+    const { code } = await res.json();
+
+    if (display) display.innerHTML = `
+      <div style="background:var(--navy);border-radius:16px;padding:24px 20px;display:inline-block;min-width:200px">
+        <div style="font-size:11px;font-weight:700;color:var(--gold);letter-spacing:2px;text-transform:uppercase;margin-bottom:8px">Tu código</div>
+        <div style="font-size:52px;font-weight:900;letter-spacing:10px;color:#fff;font-family:monospace">${code}</div>
+        <div style="font-size:11px;color:rgba(255,255,255,0.5);margin-top:8px">Válido por 15 minutos</div>
+      </div>
+      <div style="margin-top:16px">
+        <button class="btn-primary full" onclick="navigator.clipboard?.writeText('${code}').then(()=>toast('Código copiado ✓'))" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border)">
+          📋 Copiar código
+        </button>
+        <button class="btn-primary full" onclick="renderMyQR()" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border);margin-top:6px">
+          🔄 Generar nuevo código
+        </button>
+      </div>
+    `;
+  } catch(e) {
+    if (display) display.innerHTML = `
+      <div style="color:var(--red);font-size:13px;padding:10px;margin-bottom:10px">
+        ❌ Necesitás conexión a internet para generar el código.<br>
+        <span style="color:var(--text-3)">Asegurate de estar conectado y que la app esté subida a Netlify.</span>
+      </div>
+      <button class="btn-primary full" onclick="generateCanjeCode()">Reintentar</button>
+    `;
+  }
+}
+
+// ── Minimal QR Code generator (no dependencies) ───────────────
+
+function drawQR(text) { /* unused */ }
+function showQRFallback(canvas, text) {
+  // Can't generate QR — show a short share code instead
+  const parsed = JSON.parse(text);
+  // Compress: encode as base64 short string
+  const short = btoa(unescape(encodeURIComponent(text))).substring(0, 100);
+  const parent = canvas.parentElement;
+  canvas.style.display = 'none';
+  const div = document.createElement('div');
+  div.innerHTML = `
+    <div style="background:var(--bg-card2);border:2px dashed var(--border);border-radius:12px;padding:16px;margin-bottom:10px">
+      <div style="font-size:11px;color:var(--text-3);margin-bottom:6px">QR no disponible — compartí este código:</div>
+      <div style="font-size:11px;font-family:monospace;word-break:break-all;color:var(--text);background:var(--bg-card);padding:8px;border-radius:6px;user-select:all">${btoa(unescape(encodeURIComponent(text)))}</div>
+      <button class="btn-primary full" onclick="navigator.clipboard.writeText('${btoa(unescape(encodeURIComponent(text)))}').then(()=>toast('Código copiado ✓'))" style="margin-top:10px;font-size:13px">📋 Copiar código</button>
+    </div>
+  `;
+  parent.insertBefore(div, canvas);
+}
+
+// ── QR SCANNER ────────────────────────────────────────────────
+function renderQRScanner() {
+  const body = document.getElementById('canje-qr-body');
+  body.innerHTML = `
+    <div style="padding:1rem">
+      <div style="font-size:13px;color:var(--text-2);margin-bottom:10px">Apuntá la cámara al QR de tu amigo:</div>
+      <div style="position:relative;width:100%;max-width:300px;margin:0 auto;border-radius:12px;overflow:hidden;background:#000;aspect-ratio:1/1">
+        <video id="qr-video" autoplay playsinline muted style="width:100%;height:100%;object-fit:cover"></video>
+        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none">
+          <div style="width:70%;height:70%;border:3px solid var(--yellow);border-radius:8px;box-shadow:0 0 0 9999px rgba(0,0,0,0.5)"></div>
+        </div>
+      </div>
+      <div id="qr-scan-status" style="font-size:12px;color:var(--text-3);text-align:center;padding:8px 0">Iniciando cámara...</div>
+      <div id="qr-result"></div>
+      <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">
+        <div style="font-size:12px;color:var(--text-3);margin-bottom:6px">¿No funciona la cámara? Ingresá el código de 6 caracteres:</div>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="qr-code-input" maxlength="6" placeholder="ABC123"
+            autocomplete="off" autocorrect="off" spellcheck="false"
+            oninput="this.value=this.value.toUpperCase()"
+            style="flex:1;padding:10px 12px;border-radius:8px;border:2px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:22px;font-weight:900;font-family:monospace;letter-spacing:6px;text-align:center;outline:none;text-transform:uppercase">
+          <button class="btn-primary" onclick="processQRCode()" style="padding:10px 16px;font-weight:700">OK</button>
+        </div>
+      </div>
+    </div>
+  `;
+  startQRScan();
+}
+
+
+async function startQRScan() {
+  const video = document.getElementById('qr-video');
+  const status = document.getElementById('qr-scan-status');
+  if (!navigator.mediaDevices?.getUserMedia) {
+    if (status) status.textContent = '📷 Cámara no disponible — usá el código';
+    return;
+  }
+  try {
+    qrScanStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width:{ideal:640}, height:{ideal:640} }
+    });
+    video.srcObject = qrScanStream;
+    if (status) status.textContent = '📷 Apuntá al QR';
+    // jsQR is embedded — start scanning immediately
+    qrScanInterval = setInterval(() => scanQRFrame(video, status), 300);
+  } catch(e) {
+    if (status) status.textContent = '📷 ' + (e.name === 'NotAllowedError' ? 'Permiso denegado — usá el código' : 'Cámara no disponible');
+  }
+}
+
+function stopQRScan() {
+  if (qrScanInterval) { clearInterval(qrScanInterval); qrScanInterval = null; }
+  if (qrScanStream) { qrScanStream.getTracks().forEach(t=>t.stop()); qrScanStream = null; }
+}
+
+function scanQRFrame(video, status) {
+  if (!video.readyState || video.readyState < 2) return;
+  const c = document.createElement('canvas');
+  c.width = video.videoWidth; c.height = video.videoHeight;
+  c.getContext('2d').drawImage(video, 0, 0);
+  const imageData = c.getContext('2d').getImageData(0, 0, c.width, c.height);
+  if (!window.jsQR) return;
+  const qr = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
+  if (qr && qr.data) {
+    try {
+      const parsed = JSON.parse(qr.data);
+      if (parsed.v === 1 && parsed.r && parsed.m) {
+        stopQRScan();
+        status.textContent = '✓ QR leído correctamente';
+        friendData = parsed;
+        showCanjeProposal(parsed);
+      }
+    } catch(e) {}
+  }
+}
+
+// ── CANJE PROPOSAL ────────────────────────────────────────────
+function showCanjeProposal(friend) {
+  const myIdx = buildStickerIndex();
+  const myRepeated = myIdx.filter(s => cnt(s.key) > 1);
+  const myMissing  = myIdx.filter(s => cnt(s.key) === 0);
+
+  // What I can give to friend (my repeated that they need)
+  const iCanGive = myRepeated.filter(s => friend.m.includes(s.code));
+  // What friend can give me (their repeated that I need)
+  const friendCanGive = myMissing.filter(s => friend.r.includes(s.code));
+
+  const result = document.getElementById('qr-result');
+  if (!result) return;
+
+  if (iCanGive.length === 0 && friendCanGive.length === 0) {
+    result.innerHTML = `
+      <div style="text-align:center;padding:1.5rem;color:var(--text-2)">
+        <div style="font-size:36px;margin-bottom:8px">😕</div>
+        <div style="font-size:14px;font-weight:600">No hay canjes posibles</div>
+        <div style="font-size:13px;margin-top:4px">No tienen figuritas que se necesiten mutuamente.</div>
+      </div>`;
+    return;
+  }
+
+  result.innerHTML = `
+    <div style="margin-top:12px">
+      <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:8px">🎯 Canjes posibles (${Math.min(iCanGive.length, friendCanGive.length)} pares)</div>
+
+      ${iCanGive.length > 0 ? `
+      <div style="font-size:12px;font-weight:700;color:var(--green-ok);margin-bottom:4px">✅ Yo le puedo dar (${iCanGive.length}):</div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px">
+        ${iCanGive.map(s=>`<span style="background:var(--green-ok-bg);color:var(--green-ok);font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600">${s.code} ${s.name}</span>`).join('')}
+      </div>` : ''}
+
+      ${friendCanGive.length > 0 ? `
+      <div style="font-size:12px;font-weight:700;color:var(--blue);margin-bottom:4px">✅ Él/ella me puede dar (${friendCanGive.length}):</div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:16px">
+        ${friendCanGive.map(s=>`<span style="background:var(--green-ok-bg);color:var(--blue);font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600">${s.code} ${s.name}</span>`).join('')}
+      </div>` : ''}
+
+      <div style="font-size:13px;color:var(--text-2);margin-bottom:12px;padding:10px;background:var(--bg-card2);border-radius:8px;line-height:1.5">
+        ⚠️ Mostrá esta pantalla a tu amigo para que confirme el canje de su lado también. Ambos tienen que aceptar.
+      </div>
+
+      <button class="btn-primary full" onclick="confirmCanjeQR()" style="background:var(--green-ok)">
+        ✅ Confirmar y registrar este canje
+      </button>
+      <button class="btn-primary full" onclick="closeCanjeQR()" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border);margin-top:8px">
+        Cancelar
+      </button>
+    </div>
+  `;
+}
+
+function confirmCanjeQR() {
+  if (!friendData) return;
+  const myIdx = buildStickerIndex();
+  const myRepeated = myIdx.filter(s => cnt(s.key) > 1);
+  const myMissing  = myIdx.filter(s => cnt(s.key) === 0);
+  const iGive = myRepeated.filter(s => friendData.m.includes(s.code));
+  const iGet  = myMissing.filter(s => friendData.r.includes(s.code));
+
+  // Apply to stock
+  iGive.forEach(s => { stickers[s.key] = Math.max(0, cnt(s.key) - 1); });
+  iGet.forEach(s => { stickers[s.key] = cnt(s.key) + 1; });
+  save();
+
+  // Register as movement
+  pushMov({
+    tipo: 'canje',
+    give: iGive.map(s=>({key:s.key, name:s.name})),
+    get:  iGet.map(s=>({key:s.key, name:s.name})),
+    nota: 'Canje vía QR'
+  });
+
+  closeCanjeQR();
+  toast(`Canje registrado ✓ · Diste ${iGive.length} · Recibiste ${iGet.length}`);
+  renderTab(activeTab);
+}
+
 // ── CONFIRM MODAL ────────────────────────────────────────────
 let _confirmCallback = null;
 
