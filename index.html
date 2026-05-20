@@ -10,7 +10,19 @@
 <link rel='apple-touch-icon' href='./icons/apple-touch-icon.png'>
 <link rel='icon' type='image/png' href='./icons/icon-192.png'>
 <link rel='stylesheet' href='./app.css'>
-</head><body><!-- LOGIN -->
+</head><body>
+<script>
+// Force kill old service workers and reload with fresh files
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations().then(regs => {
+    regs.forEach(r => r.unregister());
+  });
+}
+// Clear all caches
+if ('caches' in window) {
+  caches.keys().then(keys => keys.forEach(k => caches.delete(k)));
+}
+</script><!-- LOGIN -->
 <div id="screen-login" class="screen active">
   <div class="login-bg">
     <div class="login-trophy">🏆</div>
