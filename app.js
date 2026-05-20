@@ -1784,7 +1784,7 @@ async function recognizeWithClaude(base64Image) {
         <div style="font-size:13px;color:var(--text-2);margin:8px 0;line-height:1.5">
           Obtené una key gratis en <b>aistudio.google.com</b> y el escáner va a reconocer los códigos con mucha más precisión.
         </div>
-        <button class="btn-primary full" onclick="openVisionSetup()" style="margin-bottom:8px">🔑 Configurar Gemini AI (gratis)</button>
+        
         <div style="font-size:12px;color:var(--text-3);text-align:center;margin-bottom:8px">— o —</div>
         <div style="font-size:12px;color:var(--text-2);margin-bottom:6px">Ingresá el código manualmente:</div>
       `;
