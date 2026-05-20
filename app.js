@@ -1873,8 +1873,8 @@ function showDealConfirmation(deal) {
 }
 
 function acceptAndShowConfirmQR(deal) {
-  // Apply deal to my album
-  acceptDeal(deal);
+  // Apply deal to my album but keep modal open
+  applyDeal(deal.get, deal.give, 'Canje vía QR (aceptado)', true);
   // Generate confirmation QR for proposer to scan
   // Confirmation QR = same M26D but with flipped give/get so proposer applies correctly
   const confirmEncoded = encodeDeal(deal.get, deal.give); // flipped
@@ -1894,8 +1894,7 @@ function acceptAndShowConfirmQR(deal) {
 }
 
 function acceptDeal(deal) {
-  // deal.give = what the proposer gives (I receive), deal.get = what proposer receives (I give)
-  applyDeal(deal.get, deal.give, 'Canje vía QR (aceptado)');
+  applyDeal(deal.get, deal.give, 'Canje vía QR (aceptado)', false);
 }
 
 function confirmDealDirectly() {
@@ -1903,7 +1902,7 @@ function confirmDealDirectly() {
   applyDeal(dealGive, dealGet, 'Canje vía QR');
 }
 
-function applyDeal(give, get, nota) {
+function applyDeal(give, get, nota, noClose) {
   // Resolve codes to keys
   const myIdx = buildStickerIndex();
   const findKey = code => myIdx.find(s => s.code === code)?.key || code;
@@ -1919,9 +1918,11 @@ function applyDeal(give, get, nota) {
   // Register in costos
   pushMov({ tipo:'canje', give: giveItems, get: getItems, nota });
 
-  closeCanjeQR();
   toast(`Canje registrado ✓ · Diste ${give.length} · Recibiste ${get.length}`);
-  renderTab(activeTab);
+  if (!noClose) {
+    closeCanjeQR();
+    renderTab(activeTab);
+  }
 }
 
 // ── QR DRAWING ────────────────────────────────────────────────
