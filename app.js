@@ -1,4 +1,4 @@
-// v7-quicksearch-clean
+// v8-with-missing-fix
 // ============================================================
 //  MUNDIAL 2026 TRACKER v2 — app.js
 // ============================================================
@@ -1524,14 +1524,12 @@ let dealGet = [];           // stickers I will receive
 
 // ── QR DATA ENCODING ─────────────────────────────────────────
 function encodeQRData(data) {
-  // Keep only repeated (what matters for trading), limit to 30 for QR size
+  // Include both repeated (r) and missing (m) but limit to fit QR
+  // Repeated: up to 30 codes (what I can give)
+  // Missing: up to 25 codes (what I need) — most useful for trading
   const r = (data.r || []).slice(0, 30).join(',');
-  // Don't include missing in QR — too many, derive from repeated instead
-  return 'M26|r:' + r;
-}
-function getMyQRDataFull() {
-  // Full data including missing — used for deal proposal matching
-  return getMyQRData();
+  const m = (data.m || []).slice(0, 25).join(',');
+  return 'M26|r:' + r + '|m:' + m;
 }
 function encodeDeal(give, get) {
   return 'M26D|g:' + give.join(',') + '|r:' + get.join(',');
@@ -1551,8 +1549,8 @@ function decodeQRData(str) {
     const m = (parts.find(p=>p.startsWith('m:'))||'m:').substring(2).split(',').filter(Boolean);
     return { v:1, r, m };
   }
+  // Legacy compact format
   if (str.startsWith('M26r:')) {
-    // Compact format without M26| prefix
     const r = str.substring(5).split(',').filter(Boolean);
     return { v:1, r, m:[] };
   }
@@ -1674,14 +1672,36 @@ function scanQRFrame(video, status) {
   c.width = video.videoWidth; c.height = video.videoHeight;
   c.getContext('2d').drawImage(video, 0, 0);
   const imageData = c.getContext('2d').getImageData(0, 0, c.width, c.height);
+  
+  // Debug: show jsQR availability
+  if (!window._scanDebug) {
+    window._scanDebug = true;
+    const s = status || document.getElementById('qr-scan-status');
+    if (s) s.textContent = '📷 Escaneando... jsQR:' + (typeof jsQR) + ' w.jsQR:' + (typeof window.jsQR);
+  }
+  
+  // Try both jsQR and window.jsQR
+  const jsqrFn = (typeof jsQR === 'function') ? jsQR : (typeof window.jsQR === 'function') ? window.jsQR : null;
+  if (!jsqrFn) {
+    if (status) status.textContent = '❌ jsQR no disponible';
+    return;
+  }
+  
   let qr = null;
-  try { qr = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts:'attemptBoth' }); } catch(e) { return; }
+  try { qr = jsqrFn(imageData.data, imageData.width, imageData.height, { inversionAttempts:'attemptBoth' }); } catch(e) { 
+    if (status) status.textContent = '❌ Error jsQR: ' + e.message;
+    return; 
+  }
   if (!qr?.data) return;
+  
+  if (status) status.textContent = '🔍 Detectado: ' + qr.data.substring(0,30);
   const parsed = decodeQRData(qr.data.trim());
   if (parsed) {
     stopQRScan();
     if (status) status.textContent = '✅ QR leído';
     handleScannedData(parsed);
+  } else {
+    if (status) status.textContent = '⚠ QR no reconocido: ' + qr.data.substring(0,20);
   }
 }
 
@@ -1714,10 +1734,17 @@ function renderDealProposal(body) {
   }
 
   const myIdx = buildStickerIndex();
-  // What I can give = my repeated that friend needs
+  // What I can give = my repeated that friend needs (friend's missing = friendData.m)
   const iCanGive = myIdx.filter(s => cnt(s.key) > 1 && friendData.m.includes(s.code));
-  // What friend can give = friend's repeated that I need
+  // What friend can give = friend's repeated that I need (friend's repeated = friendData.r)
   const friendCanGive = myIdx.filter(s => cnt(s.key) === 0 && friendData.r.includes(s.code));
+  
+  // DEBUG — show what we received
+  console.log('friendData.r:', friendData.r.slice(0,5), '...total:', friendData.r.length);
+  console.log('friendData.m:', friendData.m.slice(0,5), '...total:', friendData.m.length);
+  console.log('iCanGive:', iCanGive.length, 'friendCanGive:', friendCanGive.length);
+  console.log('My repeated count:', myIdx.filter(s=>cnt(s.key)>1).length);
+  console.log('My missing count:', myIdx.filter(s=>cnt(s.key)===0).length);
 
   body.innerHTML = `
     <div style="padding:1rem">
@@ -1874,16 +1901,34 @@ function applyDeal(give, get, nota) {
 function drawQROnCanvas(canvasId, text) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
-  if (window.qrcode) { _drawQRWithLib(canvas, text); return; }
-  if (!window._qrLoading) {
-    window._qrLoading = true;
-    const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js';
-    s.onload = () => { window._qrLoading=false; if(window.qrcode) _drawQRWithLib(canvas,text); else _drawQRManual(canvas,text); };
-    s.onerror = () => { window._qrLoading=false; _drawQRManual(canvas,text); };
-    document.head.appendChild(s);
-  }
+  const wrap = canvas.parentElement;
+  
+  // Always use qrserver.com — generates real scannable QR image
+  canvas.style.display = 'none';
+  const existing = wrap.querySelector('.qr-api-img');
+  if (existing) existing.remove();
+  
+  const img = document.createElement('img');
+  img.className = 'qr-api-img';
+  img.style.cssText = 'width:220px;height:220px;border-radius:8px;display:block;margin:0 auto';
+  img.alt = 'QR Code';
+  
+  const encoded = encodeURIComponent(text);
+  img.src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encoded}&color=0A0F2C&bgcolor=FFFFFF&margin=10`;
+  
+  img.onload = () => {
+    const t = document.getElementById('qr-timer-text');
+    if (t) t.textContent = 'QR listo — mostráselo a tu amigo';
+  };
+  img.onerror = () => {
+    // Fallback to embedded lib if no internet
+    canvas.style.display = 'block';
+    if (window.qrcode) { try { _drawQRWithLib(canvas, text); } catch(e) { _drawQRManual(canvas, text); } }
+    else { _drawQRManual(canvas, text); }
+  };
+  wrap.appendChild(img);
 }
+
 function _drawQRWithLib(canvas, text) {
   try {
     // Try auto version first, fall back to higher ECC levels if too much data
