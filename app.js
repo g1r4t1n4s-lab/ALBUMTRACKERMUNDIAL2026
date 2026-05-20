@@ -1524,9 +1524,14 @@ let dealGet = [];           // stickers I will receive
 
 // ── QR DATA ENCODING ─────────────────────────────────────────
 function encodeQRData(data) {
-  const r = (data.r || []).slice(0, 50).join(',');
-  const m = (data.m || []).slice(0, 50).join(',');
-  return 'M26|r:' + r + '|m:' + m;
+  // Keep only repeated (what matters for trading), limit to 30 for QR size
+  const r = (data.r || []).slice(0, 30).join(',');
+  // Don't include missing in QR — too many, derive from repeated instead
+  return 'M26|r:' + r;
+}
+function getMyQRDataFull() {
+  // Full data including missing — used for deal proposal matching
+  return getMyQRData();
 }
 function encodeDeal(give, get) {
   return 'M26D|g:' + give.join(',') + '|r:' + get.join(',');
@@ -1545,6 +1550,11 @@ function decodeQRData(str) {
     const r = (parts.find(p=>p.startsWith('r:'))||'r:').substring(2).split(',').filter(Boolean);
     const m = (parts.find(p=>p.startsWith('m:'))||'m:').substring(2).split(',').filter(Boolean);
     return { v:1, r, m };
+  }
+  if (str.startsWith('M26r:')) {
+    // Compact format without M26| prefix
+    const r = str.substring(5).split(',').filter(Boolean);
+    return { v:1, r, m:[] };
   }
   return null;
 }
@@ -1876,7 +1886,17 @@ function drawQROnCanvas(canvasId, text) {
 }
 function _drawQRWithLib(canvas, text) {
   try {
-    const qr = qrcode(1, 'M'); qr.addData(text); qr.make();
+    // Try auto version first, fall back to higher ECC levels if too much data
+    let qr;
+    for (const ecc of ['M','L']) {
+      try {
+        qr = qrcode(0, ecc);
+        qr.addData(text);
+        qr.make();
+        break;
+      } catch(e) { qr = null; }
+    }
+    if (!qr) { _drawQRManual(canvas, text); return; }
     const size=220, ctx=canvas.getContext('2d'), mod=qr.getModuleCount(), cell=size/mod;
     canvas.width=size; canvas.height=size;
     ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,size,size);
