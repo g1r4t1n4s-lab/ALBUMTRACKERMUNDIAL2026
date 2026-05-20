@@ -1526,8 +1526,7 @@ let _tesseractReady = false;
 let _tesseractLoading = false;
 
 function getVisionKey() {
-  // Check localStorage first (user can override), then use default
-  return localStorage.getItem('m26_vision_key') || 'AIzaSyCJ7IhOULt8p48xP-cnLmskAOdKcHVsI_M';
+  return localStorage.getItem('m26_vision_key') || '';
 }
 
 function openVisionSetup() {
@@ -1765,20 +1764,38 @@ async function recognizeWithClaude(base64Image) {
   const visionKey = getVisionKey();
 
   if (visionKey) {
-    if (status) status.textContent = '🤖 Analizando con Google Vision...';
+    if (status) status.textContent = '🤖 Analizando con Gemini...';
     try {
       const code = await recognizeWithGoogleVision(base64Image, visionKey);
       return code;
     } catch(e) {
-      if (e.message.includes('inválida')) throw e; // Bubble up key error
-      // Other errors: fall through to Tesseract
-      if (status) status.textContent = '⚠ Google Vision falló, usando OCR local...';
+      if (e.message.includes('inválida')) throw e;
+      if (status) status.textContent = '⚠ Gemini falló, usando OCR local...';
     }
   } else {
-    if (status) status.textContent = '⏳ Cargando OCR local...';
+    // No key — show prompt to configure
+    if (status) status.textContent = '⚙️ Configurá Gemini para mejor reconocimiento';
+    const result = document.getElementById('sc-result');
+    if (result) {
+      result.style.display = 'block';
+      result.className = 'sc-result error';
+      result.innerHTML = `
+        <div class="sc-result-title">⚙️ Configurá la IA para mejor reconocimiento</div>
+        <div style="font-size:13px;color:var(--text-2);margin:8px 0;line-height:1.5">
+          Obtené una key gratis en <b>aistudio.google.com</b> y el escáner va a reconocer los códigos con mucha más precisión.
+        </div>
+        <button class="btn-primary full" onclick="openVisionSetup()" style="margin-bottom:8px">🔑 Configurar Gemini AI (gratis)</button>
+        <div style="font-size:12px;color:var(--text-3);text-align:center;margin-bottom:8px">— o —</div>
+        <div style="font-size:12px;color:var(--text-2);margin-bottom:6px">Ingresá el código manualmente:</div>
+      `;
+      // Show OCR fallback below
+      showOCRFallback(result, null, '');
+      return null;
+    }
   }
 
   // Fallback to Tesseract
+  if (status) status.textContent = '⏳ Cargando OCR local...';
   return recognizeWithTesseract(base64Image);
 }
 
