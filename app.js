@@ -1516,6 +1516,10 @@ function showScanResult(s,r,st){ if(r){r.style.display='block';} }
 
 
 
+let qrScanStream = null;
+let qrScanInterval = null;
+let friendData = null;
+
 function openCanjeQR() {
   document.getElementById('modal-canje-qr').style.display = 'flex';
   document.getElementById('sidebar').classList.remove('open');
