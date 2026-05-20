@@ -1826,6 +1826,29 @@ function resetCapture() {
   document.getElementById('sc-status').textContent = '📷 Listo — capturá el código del dorso';
 }
 
+// ── SHOW SCAN RESULT ─────────────────────────────────────────
+function showScanResult(sticker, resultDiv, status) {
+  if (!resultDiv) return;
+  const c = cnt(sticker.key);
+  const owned = c > 0 ? `<span style="font-size:12px;color:var(--yellow);margin-left:6px">Ya tenés ×${c}</span>` : '';
+  resultDiv.className = 'sc-result success';
+  resultDiv.style.display = 'block';
+  resultDiv.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div>
+        <div style="font-size:12px;font-weight:800;color:var(--blue);margin-bottom:2px">${sticker.code}${owned}</div>
+        <div style="font-size:16px;font-weight:700;color:var(--text)">${sticker.name}</div>
+        <div style="font-size:12px;color:var(--text-3)">${sticker.section}</div>
+      </div>
+      <button onclick="confirmScan('${sticker.key}')"
+        style="background:var(--green-ok);color:#fff;border:none;border-radius:10px;padding:10px 18px;font-size:15px;font-weight:700;cursor:pointer;flex-shrink:0;margin-left:10px">
+        + Agregar
+      </button>
+    </div>
+  `;
+  if (status) status.textContent = `✅ Detectado: ${sticker.code} — ${sticker.name}`;
+}
+
 // ── TOAST ────────────────────────────────────────────────────
 function toast(msg) {
   const t = document.getElementById('toast');
