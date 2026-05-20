@@ -1826,13 +1826,21 @@ function generateDealQR() {
   body.innerHTML = `
     <div style="text-align:center;padding:1rem">
       <div style="font-size:13px;color:var(--text-2);margin-bottom:8px;line-height:1.5">
-        Mostrále este QR a tu amigo para que acepte el canje.<br>
-        <b>Doy:</b> ${dealGive.join(', ')||'—'} · <b>Recibo:</b> ${dealGet.join(', ')||'—'}
+        <b>Paso 1:</b> Mostrále este QR a tu amigo para que lo escanee y acepte.<br>
+        <b>Doy:</b> ${dealGive.join(', ')||'—'}<br>
+        <b>Recibo:</b> ${dealGet.join(', ')||'—'}
       </div>
-      <div id="qr-wrap" style="display:inline-block;background:#fff;padding:14px;border-radius:12px;margin-bottom:12px">
+      <div id="qr-wrap" style="display:inline-block;background:#fff;padding:14px;border-radius:12px;margin-bottom:8px">
         <canvas id="qr-canvas" width="220" height="220"></canvas>
       </div>
       <div style="font-size:12px;color:var(--text-3);margin-bottom:12px">Tu amigo escanea esto para aceptar</div>
+      <div style="background:var(--bg-card2);border-radius:10px;padding:12px;margin-bottom:12px;font-size:13px;color:var(--text-2);line-height:1.5">
+        <b>Paso 2:</b> Cuando tu amigo acepte, él va a generar un QR de confirmación.<br>
+        Escanealo con el botón de abajo para aplicar el canje en tu álbum.
+      </div>
+      <button class="btn-primary full" onclick="switchQRTab('scan')" style="background:var(--blue);margin-bottom:8px">
+        📷 Escanear confirmación del amigo
+      </button>
       <button class="btn-primary full" onclick="switchQRTab('deal')" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border)">
         ← Modificar propuesta
       </button>
@@ -1841,13 +1849,11 @@ function generateDealQR() {
 }
 
 function showDealConfirmation(deal) {
-  // Called when friend scans our deal QR
-  // deal.give = what the QR generator gives, deal.get = what they receive
-  // From our perspective: we give deal.get, we receive deal.give
+  // deal.give = what proposer gives (I receive), deal.get = what proposer receives (I give)
   const body = document.getElementById('canje-qr-body');
   body.innerHTML = `
     <div style="padding:1rem">
-      <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:14px">🤝 Propuesta de canje recibida</div>
+      <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:12px">🤝 Propuesta de canje recibida</div>
       <div style="background:var(--bg-card2);border-radius:10px;padding:12px;margin-bottom:14px">
         <div style="font-size:12px;color:var(--green-ok);margin-bottom:6px;font-weight:700">
           📥 Vos recibís: <span style="color:var(--text)">${deal.give.join(', ')||'—'}</span>
@@ -1856,14 +1862,35 @@ function showDealConfirmation(deal) {
           📤 Vos das: <span style="color:var(--text)">${deal.get.join(', ')||'—'}</span>
         </div>
       </div>
-      <button class="btn-primary full" onclick="acceptDeal(${JSON.stringify(deal).replace(/"/g,'&quot;')})" style="background:var(--green-ok);margin-bottom:8px">
-        ✅ Aceptar y confirmar canje
+      <button class="btn-primary full" onclick="acceptAndShowConfirmQR(${JSON.stringify(deal).replace(/"/g,'&quot;')})" style="background:var(--green-ok);margin-bottom:8px">
+        ✅ Aceptar y generar QR de confirmación
       </button>
       <button class="btn-primary full" onclick="switchQRTab('scan')" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border)">
         ✕ Rechazar
       </button>
     </div>`;
   stopQRScan();
+}
+
+function acceptAndShowConfirmQR(deal) {
+  // Apply deal to my album
+  acceptDeal(deal);
+  // Generate confirmation QR for proposer to scan
+  // Confirmation QR = same M26D but with flipped give/get so proposer applies correctly
+  const confirmEncoded = encodeDeal(deal.get, deal.give); // flipped
+  const body = document.getElementById('canje-qr-body');
+  body.innerHTML = `
+    <div style="text-align:center;padding:1rem">
+      <div style="font-size:13px;color:var(--green-ok);font-weight:700;margin-bottom:8px">✅ Canje aplicado en tu álbum</div>
+      <div style="font-size:13px;color:var(--text-2);margin-bottom:12px;line-height:1.5">
+        Ahora mostrále este QR al que propuso el canje para que lo confirme en su álbum.
+      </div>
+      <div id="qr-wrap" style="display:inline-block;background:#fff;padding:14px;border-radius:12px;margin-bottom:8px">
+        <canvas id="qr-canvas" width="220" height="220"></canvas>
+      </div>
+      <div style="font-size:12px;color:var(--text-3)">El proponente escanea esto para confirmar</div>
+    </div>`;
+  setTimeout(() => drawQROnCanvas('qr-canvas', confirmEncoded), 100);
 }
 
 function acceptDeal(deal) {
