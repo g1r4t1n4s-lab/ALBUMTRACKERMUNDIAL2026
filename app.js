@@ -1768,17 +1768,24 @@ function _showQRTextFallback(canvas, text) {
   parent.appendChild(div);
 }
 
+
+// ── QR DATA ENCODING (compact format, no server needed) ──────
+function encodeQRData(data) {
+  const r = (data.r || []).slice(0, 40).join(',');
+  const m = (data.m || []).slice(0, 40).join(',');
+  return 'M26|r:' + r + '|m:' + m;
+}
+
+function decodeQRData(str) {
+  if (!str || !str.startsWith('M26|')) return null;
+  const parts = str.split('|');
+  const r = (parts.find(p => p.startsWith('r:')) || 'r:').substring(2).split(',').filter(Boolean);
+  const m = (parts.find(p => p.startsWith('m:')) || 'm:').substring(2).split(',').filter(Boolean);
+  return { v:1, r, m };
+}
+
 async function generateCanjeCode(data) {
-  try {
-    const res = await fetch('/.netlify/functions/canje', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data || getMyQRData())
-    });
-    if (!res.ok) return null;
-    const { code } = await res.json();
-    return code;
-  } catch(e) { return null; }
+  return null; // No server on GitHub Pages — use local QR encoding
 }
 
 async function generateCanjeCode() {
