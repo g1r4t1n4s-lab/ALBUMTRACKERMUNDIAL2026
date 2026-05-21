@@ -1,4 +1,3 @@
-// v8-with-missing-fix
 // ============================================================
 //  MUNDIAL 2026 TRACKER v2 — app.js
 // ============================================================
@@ -236,12 +235,7 @@ function computeStats() {
   });
 
   // Cracks
-  ALBUM_DATA.cracks.items.forEach((_, i) => {
-    total++;
-    const c = cnt(k('cracks', i));
-    if (c >= 1) owned++;
-    if (c > 1) repeated += c - 1;
-  });
+  // Cracks = same stickers as team players, don't double count
 
   // Coca-Cola
   ALBUM_DATA.cocacola.items.forEach((_, i) => {
@@ -625,7 +619,7 @@ function renderCracks() {
       </div>
 
       <div class="tiles-grid" id="cracks-grid">
-        ${items.map((item, i) => renderTile('cracks', i, item.code, item.name + '\n' + item.team, true)).join('')}
+        ${items.map((item, i) => { const ck=getCrackKey(item); if(!ck)return ''; return renderTile('cracks',i,item.code,item.name.replace(' ⭐',''),true,ck); }).join('')}
       </div>
     </div>
   `;
@@ -635,19 +629,20 @@ function renderCracksQuick(changedKey) {
   const grid = document.getElementById('cracks-grid');
   if (!grid) return;
   const items = ALBUM_DATA.cracks.items;
-  grid.innerHTML = items.map((item, i) => renderTile('cracks', i, item.code, item.name + '\n' + item.team, true)).join('');
+  grid.innerHTML = items.map((item,i)=>{const ck=getCrackKey(item);if(!ck)return '';return renderTile('cracks',i,item.code,item.name.replace(' ⭐',''),true,ck);}).join('');
 }
 
 // ── TILE BUILDER ─────────────────────────────────────────────
-function renderTile(section, idx, code, nameFull, isSpecial) {
-  const c = cnt(k(section, idx));
+function renderTile(section, idx, code, nameFull, isSpecial, keyOverride) {
+  const key = keyOverride || k(section, idx);
+  const c = cnt(key);
   const sc = c === 0 ? 's-0' : c === 1 ? 's-1' : c === 2 ? 's-2' : 's-3';
   const parts = nameFull.split('\n');
   const displayName = parts[0];
   const subName = parts[1] || '';
   return `<div class="sticker-tile ${sc} ${isSpecial?'special-tile':''}"
-    onclick="setCnt('${k(section,idx)}',${c+1})"
-    oncontextmenu="event.preventDefault();setCnt('${k(section,idx)}',${c-1})"
+    onclick="setCnt('${key}',${c+1})"
+    oncontextmenu="event.preventDefault();setCnt('${key}',${c-1})"
     title="${displayName}${subName?' — '+subName:''}">
     <span class="tile-code">${code}</span>
     <span class="tile-name">${displayName}</span>
@@ -1484,8 +1479,7 @@ function openScanner() {
 }
 function closeScanner() { document.getElementById('modal-scanner').style.display = 'none'; }
 function renderQuickGrid() {
-  const missing = [];
-  ALBUM_DATA.teams.forEach(team => { team.players.forEach(p => { const key = team.flag + p.num; if (!cnt(key)) missing.push({ key, code: key, name: p.name, section: team.name }); }); });
+  const missing = buildStickerIndex().filter(s => cnt(s.key) === 0);
   if (!missing.length) return '<div style="padding:20px;text-align:center;color:var(--text-3)">¡Álbum completo! 🏆</div>';
   return '<div style="padding:6px 4px 4px;font-size:11px;color:var(--text-3);font-weight:600">TUS PRÓXIMAS FALTANTES</div>' + missing.slice(0,40).map(s=>quickResultRow(s)).join('');
 }
@@ -1495,50 +1489,45 @@ function quickSearch(q) {
   const query = (q||'').trim();
   if (!query) { container.innerHTML = renderQuickGrid(); return; }
   const qLow = query.toLowerCase(), qUp = query.toUpperCase().replace(/\s+/g,'');
-  const results = [];
-  ALBUM_DATA.teams.forEach(team => { team.players.forEach(p => { const code = team.flag+p.num; if (p.name.toLowerCase().includes(qLow)||code.includes(qUp)||team.name.toLowerCase().includes(qLow)) results.push({key:code,code,name:p.name,section:team.name}); }); });
-  [...(ALBUM_DATA.intro?.items||[]),...(ALBUM_DATA.especiales?.items||[]),...(ALBUM_DATA.cocacola?.items||[])].forEach(s=>{ if(s.code.includes(qUp)||s.name.toLowerCase().includes(qLow)) results.push({key:s.code,code:s.code,name:s.name,section:'Especiales'}); });
+  const results = buildStickerIndex().filter(s =>
+    s.name.toLowerCase().includes(qLow) ||
+    s.code.toUpperCase().includes(qUp) ||
+    (s.section||'').toLowerCase().includes(qLow)
+  );
   container.innerHTML = results.length ? results.slice(0,50).map(s=>quickResultRow(s)).join('') : `<div style="padding:20px;text-align:center;color:var(--text-3)">Sin resultados para "${query}"</div>`;
 }
 function quickResultRow(s) {
   const c = cnt(s.key), sk = s.key.replace(/[^a-z0-9]/gi,'-');
   const badge = c>0 ? `<span style="background:var(--blue);color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px">×${c}</span>` : '';
-  return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 8px;border-bottom:1px solid var(--border);gap:8px"><div style="flex:1;min-width:0"><div style="font-size:11px;font-weight:800;color:var(--blue)">${s.code} ${badge}</div><div style="font-size:14px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.name}</div><div style="font-size:11px;color:var(--text-3)">${s.section}</div></div><div style="display:flex;align-items:center;gap:6px;flex-shrink:0"><button onclick="quickAdd('${s.key}',-1)" style="width:30px;height:30px;border-radius:50%;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:16px;cursor:pointer">−</button><span id="qty-${sk}" style="font-size:15px;font-weight:700;min-width:20px;text-align:center;color:${c>0?'var(--blue)':'var(--text-3)'}">${c}</span><button onclick="quickAdd('${s.key}',1)" style="width:30px;height:30px;border-radius:50%;border:none;background:var(--blue);color:#fff;font-size:16px;cursor:pointer">+</button></div></div>`;
+  return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 8px;border-bottom:1px solid var(--border);gap:8px"><div style="flex:1;min-width:0"><div style="font-size:11px;font-weight:800;color:var(--blue)">${s.code} ${badge}</div><div style="font-size:14px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.name}</div><div style="font-size:11px;color:var(--text-3)">${s.section||''}</div></div><div style="display:flex;align-items:center;gap:6px;flex-shrink:0"><button onclick="quickAdd('${s.key}',-1)" style="width:30px;height:30px;border-radius:50%;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:16px;cursor:pointer">−</button><span id="qty-${sk}" style="font-size:15px;font-weight:700;min-width:20px;text-align:center;color:${c>0?'var(--blue)':'var(--text-3)'}">${c}</span><button onclick="quickAdd('${s.key}',1)" style="width:30px;height:30px;border-radius:50%;border:none;background:var(--blue);color:#fff;font-size:16px;cursor:pointer">+</button></div></div>`;
 }
 function quickAdd(key, delta) {
   stickers[key] = Math.max(0, cnt(key)+delta); save();
   const el = document.getElementById('qty-'+key.replace(/[^a-z0-9]/gi,'-'));
   if (el) { el.textContent = stickers[key]; el.style.color = stickers[key]>0?'var(--blue)':'var(--text-3)'; }
-  if (activeTab==='home') renderTab('home');
+  renderTab(activeTab);
 }
 function showScanResult(s,r,st){ if(r){r.style.display='block';} }
 
 
-
-
+// ── QR GLOBALS ────────────────────────────────────────────────
 let qrScanStream = null;
 let qrScanInterval = null;
-let friendData = null;      // data scanned from friend's QR
-let dealGive = [];          // stickers I will give
-let dealGet = [];           // stickers I will receive
-let pendingDeal = null;     // deal proposal waiting for acceptance
+let friendData = null;
+let dealGive = [];
+let dealGet = [];
+let pendingDeal = null;
 
 // ── QR DATA ENCODING ─────────────────────────────────────────
 function encodeQRData(data) {
-  // Include both repeated (r) and missing (m) but limit to fit QR
-  // Repeated: up to 30 codes (what I can give)
-  // Missing: up to 25 codes (what I need) — most useful for trading
-  const r = (data.r || []).slice(0, 30).join(',');
-  const m = (data.m || []).slice(0, 25).join(',');
-  return 'M26|r:' + r + '|m:' + m;
+  const r = (data.r||[]).slice(0,30).join(',');
+  const m = (data.m||[]).slice(0,25).join(',');
+  return 'M26|r:'+r+'|m:'+m;
 }
-function encodeDeal(give, get) {
-  return 'M26D|g:' + give.join(',') + '|r:' + get.join(',');
-}
+function encodeDeal(give, get) { return 'M26D|g:'+give.join(',')+'|r:'+get.join(','); }
 function decodeQRData(str) {
   if (!str) return null;
   if (str.startsWith('M26D|')) {
-    // Deal proposal QR
     const parts = str.split('|');
     const g = (parts.find(p=>p.startsWith('g:'))||'g:').substring(2).split(',').filter(Boolean);
     const r = (parts.find(p=>p.startsWith('r:'))||'r:').substring(2).split(',').filter(Boolean);
@@ -1550,445 +1539,196 @@ function decodeQRData(str) {
     const m = (parts.find(p=>p.startsWith('m:'))||'m:').substring(2).split(',').filter(Boolean);
     return { v:1, r, m };
   }
-  // Legacy compact format
-  if (str.startsWith('M26r:')) {
-    const r = str.substring(5).split(',').filter(Boolean);
-    return { v:1, r, m:[] };
-  }
   return null;
 }
-
 function getMyQRData() {
-  const repeated = [], missing = [];
+  const repeated=[], missing=[];
   buildStickerIndex().forEach(s => {
     const c = cnt(s.key);
-    if (c > 1) repeated.push(s.code);
-    if (c === 0) missing.push(s.code);
+    if (c>1) repeated.push(s.code);
+    if (c===0) missing.push(s.code);
   });
-  return { v:1, r: repeated, m: missing };
+  return { v:1, r:repeated, m:missing };
 }
 async function generateCanjeCode() { return null; }
-
-// ── OPEN / CLOSE ──────────────────────────────────────────────
 function openCanjeQR() {
-  friendData = null; dealGive = []; dealGet = [];
-  document.getElementById('modal-canje-qr').style.display = 'flex';
+  friendData=null; dealGive=[]; dealGet=[];
+  document.getElementById('modal-canje-qr').style.display='flex';
   document.getElementById('sidebar').classList.remove('open');
   document.getElementById('mobile-overlay').classList.remove('open');
   switchQRTab('show');
 }
 function closeCanjeQR() {
   stopQRScan();
-  document.getElementById('modal-canje-qr').style.display = 'none';
-  friendData = null; dealGive = []; dealGet = [];
+  document.getElementById('modal-canje-qr').style.display='none';
+  friendData=null; dealGive=[]; dealGet=[];
 }
 function switchQRTab(tab) {
   ['show','scan','deal'].forEach(t => {
     const btn = document.getElementById('qr-tab-'+t);
-    if (btn) btn.classList.toggle('active', t === tab);
+    if (btn) btn.classList.toggle('active', t===tab);
   });
-  if (tab !== 'scan') stopQRScan();
+  if (tab!=='scan') stopQRScan();
   const body = document.getElementById('canje-qr-body');
-  if (tab === 'show') renderMyQR(body);
-  else if (tab === 'scan') renderQRScanner(body);
-  else if (tab === 'deal') renderDealProposal(body);
+  if (tab==='show') renderMyQR(body);
+  else if (tab==='scan') renderQRScanner(body);
+  else if (tab==='deal') renderDealProposal(body);
 }
-
-// ── TAB 1: MI QR ──────────────────────────────────────────────
 function renderMyQR(body) {
   const data = getMyQRData();
-  body.innerHTML = `
-    <div style="text-align:center;padding:1rem">
-      <div style="font-size:13px;color:var(--text-2);margin-bottom:12px;line-height:1.5">
-        Mostrále este QR a tu amigo para que lo escanee.<br>
-        Tiene tus <b>${data.r.length}</b> repetidas y <b>${data.m.length}</b> faltantes.
-      </div>
-      <div id="qr-wrap" style="display:inline-block;background:#fff;padding:14px;border-radius:12px;margin-bottom:12px;min-width:220px;min-height:220px">
-        <canvas id="qr-canvas" width="220" height="220"></canvas>
-      </div>
-      <div style="font-size:12px;color:var(--text-3)" id="qr-timer-text">Generando QR...</div>
-    </div>`;
-  setTimeout(() => {
-    const data2 = getMyQRData();
-    if (!data2.r.length && !data2.m.length) {
-      document.getElementById('qr-wrap').innerHTML = '<div style="padding:20px;color:var(--text-3);font-size:13px">No hay datos para compartir todavía</div>';
-      return;
-    }
-    drawQROnCanvas('qr-canvas', encodeQRData(data2));
-    const t = document.getElementById('qr-timer-text');
-    if (t) t.textContent = 'QR listo — mostráselo a tu amigo';
-  }, 100);
+  body.innerHTML = `<div style="text-align:center;padding:1rem"><div style="font-size:13px;color:var(--text-2);margin-bottom:12px;line-height:1.5">Mostrále este QR a tu amigo.<br>Tenés <b>${data.r.length}</b> repetidas y <b>${data.m.length}</b> faltantes.</div><div id="qr-wrap" style="display:inline-block;background:#fff;padding:14px;border-radius:12px;margin-bottom:12px;min-width:220px;min-height:220px"><canvas id="qr-canvas" width="220" height="220"></canvas></div><div style="font-size:12px;color:var(--text-3)" id="qr-timer-text">Generando QR...</div></div>`;
+  setTimeout(() => { drawQROnCanvas('qr-canvas', encodeQRData(getMyQRData())); const t=document.getElementById('qr-timer-text'); if(t) t.textContent='QR listo — mostráselo a tu amigo'; }, 100);
 }
-
-// ── TAB 2: ESCANEAR ───────────────────────────────────────────
 function renderQRScanner(body) {
-  body.innerHTML = `
-    <div style="padding:1rem">
-      <div style="font-size:13px;color:var(--text-2);margin-bottom:10px">Escaneá el QR de tu amigo:</div>
-      <div style="position:relative;width:100%;max-width:300px;margin:0 auto;border-radius:12px;overflow:hidden;background:#000;aspect-ratio:1/1">
-        <video id="qr-video" autoplay playsinline muted style="width:100%;height:100%;object-fit:cover"></video>
-        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none">
-          <div style="width:70%;height:70%;border:3px solid var(--yellow);border-radius:8px;box-shadow:0 0 0 9999px rgba(0,0,0,0.5)"></div>
-        </div>
-      </div>
-      <div id="qr-scan-status" style="font-size:12px;color:var(--text-3);text-align:center;padding:8px 0">Iniciando cámara...</div>
-      <div style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px">
-        <div style="font-size:12px;color:var(--text-3);margin-bottom:6px">¿Sin cámara? Ingresá el código M26|... de tu amigo:</div>
-        <div style="display:flex;gap:8px">
-          <input type="text" id="qr-manual-input" placeholder="M26|r:ARG15,...|m:..."
-            style="flex:1;padding:8px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:12px;outline:none">
-          <button class="btn-primary" onclick="processManualQR()" style="padding:8px 12px;font-size:12px">OK</button>
-        </div>
-      </div>
-      <div id="qr-result"></div>
-    </div>`;
+  body.innerHTML = `<div style="padding:1rem"><div style="font-size:13px;color:var(--text-2);margin-bottom:10px">Escaneá el QR de tu amigo:</div><div style="position:relative;width:100%;max-width:300px;margin:0 auto;border-radius:12px;overflow:hidden;background:#000;aspect-ratio:1/1"><video id="qr-video" autoplay playsinline muted style="width:100%;height:100%;object-fit:cover"></video><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none"><div style="width:70%;height:70%;border:3px solid var(--yellow);border-radius:8px;box-shadow:0 0 0 9999px rgba(0,0,0,0.5)"></div></div></div><div id="qr-scan-status" style="font-size:12px;color:var(--text-3);text-align:center;padding:8px 0">Iniciando cámara...</div><div style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px"><div style="font-size:12px;color:var(--text-3);margin-bottom:6px">¿Sin cámara? Ingresá el código:</div><div style="display:flex;gap:8px"><input type="text" id="qr-manual-input" placeholder="M26|r:ARG15,...|m:..." style="flex:1;padding:8px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:12px;outline:none"><button class="btn-primary" onclick="processManualQR()" style="padding:8px 12px;font-size:12px">OK</button></div></div></div>`;
   startQRScan();
 }
-
 async function startQRScan() {
-  const video = document.getElementById('qr-video');
-  const status = document.getElementById('qr-scan-status');
-  if (!navigator.mediaDevices?.getUserMedia) {
-    if (status) status.textContent = 'Cámara no disponible — usá el código manual';
-    return;
-  }
+  const video=document.getElementById('qr-video'), status=document.getElementById('qr-scan-status');
+  if (!navigator.mediaDevices?.getUserMedia) { if(status) status.textContent='Cámara no disponible — usá el código manual'; return; }
   try {
-    qrScanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode:'environment' } });
+    qrScanStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
     video.srcObject = qrScanStream;
-    if (status) status.textContent = '📷 Apuntá al QR';
-    qrScanInterval = setInterval(() => scanQRFrame(video, status), 300);
-  } catch(e) {
-    if (status) status.textContent = 'Permiso denegado — usá el código manual';
-  }
+    if(status) status.textContent='📷 Apuntá al QR';
+    qrScanInterval = setInterval(()=>scanQRFrame(video,status), 300);
+  } catch(e) { if(status) status.textContent='Permiso denegado — usá el código manual'; }
 }
-
 function stopQRScan() {
-  if (qrScanInterval) { clearInterval(qrScanInterval); qrScanInterval = null; }
-  if (qrScanStream) { qrScanStream.getTracks().forEach(t=>t.stop()); qrScanStream = null; }
+  if(qrScanInterval){clearInterval(qrScanInterval);qrScanInterval=null;}
+  if(qrScanStream){qrScanStream.getTracks().forEach(t=>t.stop());qrScanStream=null;}
 }
-
 function scanQRFrame(video, status) {
-  if (!video || video.readyState < 2 || !video.videoWidth) return;
-  const c = document.createElement('canvas');
-  c.width = video.videoWidth; c.height = video.videoHeight;
-  c.getContext('2d').drawImage(video, 0, 0);
-  const imageData = c.getContext('2d').getImageData(0, 0, c.width, c.height);
-  
-  // Debug: show jsQR availability
-  if (!window._scanDebug) {
-    window._scanDebug = true;
-    const s = status || document.getElementById('qr-scan-status');
-    if (s) s.textContent = '📷 Escaneando... jsQR:' + (typeof jsQR) + ' w.jsQR:' + (typeof window.jsQR);
-  }
-  
-  // Try both jsQR and window.jsQR
-  const jsqrFn = (typeof jsQR === 'function') ? jsQR : (typeof window.jsQR === 'function') ? window.jsQR : null;
-  if (!jsqrFn) {
-    if (status) status.textContent = '❌ jsQR no disponible';
-    return;
-  }
-  
-  let qr = null;
-  try { qr = jsqrFn(imageData.data, imageData.width, imageData.height, { inversionAttempts:'attemptBoth' }); } catch(e) { 
-    if (status) status.textContent = '❌ Error jsQR: ' + e.message;
-    return; 
-  }
+  if (!video||video.readyState<2||!video.videoWidth) return;
+  const c=document.createElement('canvas'); c.width=video.videoWidth; c.height=video.videoHeight;
+  c.getContext('2d').drawImage(video,0,0);
+  const imageData=c.getContext('2d').getImageData(0,0,c.width,c.height);
+  const jsqrFn = (typeof jsQR==='function')?jsQR:(typeof window.jsQR==='function')?window.jsQR:null;
+  if (!jsqrFn) return;
+  let qr=null; try{qr=jsqrFn(imageData.data,imageData.width,imageData.height,{inversionAttempts:'attemptBoth'});}catch(e){return;}
   if (!qr?.data) return;
-  
-  if (status) status.textContent = '🔍 Detectado: ' + qr.data.substring(0,30);
-  const parsed = decodeQRData(qr.data.trim());
-  if (parsed) {
-    stopQRScan();
-    if (status) status.textContent = '✅ QR leído';
-    handleScannedData(parsed);
-  } else {
-    if (status) status.textContent = '⚠ QR no reconocido: ' + qr.data.substring(0,20);
-  }
+  const parsed=decodeQRData(qr.data.trim());
+  if (parsed) { stopQRScan(); if(status)status.textContent='✅ QR leído'; handleScannedData(parsed); }
 }
-
 function processManualQR() {
-  const val = (document.getElementById('qr-manual-input')?.value || '').trim();
-  const parsed = decodeQRData(val);
-  if (parsed) handleScannedData(parsed);
-  else toast('Código inválido');
+  const val=(document.getElementById('qr-manual-input')?.value||'').trim();
+  const parsed=decodeQRData(val);
+  if(parsed) handleScannedData(parsed); else toast('Código inválido');
 }
-
 function handleScannedData(parsed) {
-  if (parsed.isDeal) {
-    // Friend scanned our deal proposal QR — show confirmation
-    showDealConfirmation(parsed);
-  } else {
-    // Regular data QR — go to deal proposal tab
-    friendData = parsed;
-    dealGive = []; dealGet = [];
-    const dealBtn = document.getElementById('qr-tab-deal');
-    if (dealBtn) dealBtn.style.display = 'block';
-    switchQRTab('deal');
-  }
+  if (parsed.isDeal) { showDealConfirmation(parsed); }
+  else { friendData=parsed; dealGive=[]; dealGet=[]; const btn=document.getElementById('qr-tab-deal'); if(btn)btn.style.display='block'; switchQRTab('deal'); }
 }
-
-// ── TAB 3: PROPUESTA DE CANJE ─────────────────────────────────
 function renderDealProposal(body) {
-  if (!friendData) {
-    body.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-3)">Escaneá el QR de tu amigo primero</div>';
-    return;
-  }
-
-  const myIdx = buildStickerIndex();
-  // What I can give = my repeated that friend needs (friend's missing = friendData.m)
-  const iCanGive = myIdx.filter(s => cnt(s.key) > 1 && friendData.m.includes(s.code));
-  // What friend can give = friend's repeated that I need (friend's repeated = friendData.r)
-  const friendCanGive = myIdx.filter(s => cnt(s.key) === 0 && friendData.r.includes(s.code));
-  
-  // DEBUG — show what we received
-  console.log('friendData.r:', friendData.r.slice(0,5), '...total:', friendData.r.length);
-  console.log('friendData.m:', friendData.m.slice(0,5), '...total:', friendData.m.length);
-  console.log('iCanGive:', iCanGive.length, 'friendCanGive:', friendCanGive.length);
-  console.log('My repeated count:', myIdx.filter(s=>cnt(s.key)>1).length);
-  console.log('My missing count:', myIdx.filter(s=>cnt(s.key)===0).length);
-
-  body.innerHTML = `
-    <div style="padding:1rem">
-      <div style="font-size:13px;color:var(--text-2);margin-bottom:14px;line-height:1.5">
-        Personalizá el canje. Seleccioná qué figuritas intercambian — sin límite de cantidad.
-      </div>
-
-      <div style="font-size:12px;font-weight:700;color:var(--red);margin-bottom:6px">
-        📤 Yo le doy (mis repetidas que él necesita — ${iCanGive.length} disponibles):
-      </div>
-      <div id="deal-give-list" style="max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;margin-bottom:14px">
-        ${iCanGive.length ? iCanGive.map(s => dealStickerRow('give', s)).join('') : 
-          '<div style="padding:12px;text-align:center;color:var(--text-3);font-size:12px">No hay coincidencias — él no necesita ninguna de tus repetidas</div>'}
-      </div>
-
-      <div style="font-size:12px;font-weight:700;color:var(--green-ok);margin-bottom:6px">
-        📥 Él me da (sus repetidas que yo necesito — ${friendCanGive.length} disponibles):
-      </div>
-      <div id="deal-get-list" style="max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;margin-bottom:14px">
-        ${friendCanGive.length ? friendCanGive.map(s => dealStickerRow('get', s)).join('') :
-          '<div style="padding:12px;text-align:center;color:var(--text-3);font-size:12px">No hay coincidencias — él no tiene repetidas que te falten</div>'}
-      </div>
-
-      <div id="deal-summary" style="margin-bottom:12px"></div>
-
-      <button class="btn-primary full" onclick="generateDealQR()" style="background:var(--blue);margin-bottom:8px">
-        📤 Generar QR de propuesta
-      </button>
-      <button class="btn-primary full" onclick="confirmDealDirectly()" style="background:var(--green-ok)">
-        ✅ Confirmar canje ahora (sin QR)
-      </button>
-    </div>`;
-
+  if (!friendData) { body.innerHTML='<div style="padding:20px;text-align:center;color:var(--text-3)">Escaneá el QR de tu amigo primero</div>'; return; }
+  const myIdx=buildStickerIndex();
+  const iCanGive=myIdx.filter(s=>cnt(s.key)>1&&friendData.m.includes(s.code));
+  const friendCanGive=myIdx.filter(s=>cnt(s.key)===0&&friendData.r.includes(s.code));
+  body.innerHTML=`<div style="padding:1rem"><div style="font-size:13px;color:var(--text-2);margin-bottom:14px">Seleccioná qué figuritas intercambian — sin límite.</div><div style="font-size:12px;font-weight:700;color:var(--red);margin-bottom:6px">📤 Yo le doy (${iCanGive.length} disponibles):</div><div id="deal-give-list" style="max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;margin-bottom:14px">${iCanGive.length?iCanGive.map(s=>dealStickerRow('give',s)).join(''):'<div style="padding:12px;text-align:center;color:var(--text-3);font-size:12px">No hay coincidencias</div>'}</div><div style="font-size:12px;font-weight:700;color:var(--green-ok);margin-bottom:6px">📥 Él me da (${friendCanGive.length} disponibles):</div><div id="deal-get-list" style="max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;margin-bottom:14px">${friendCanGive.length?friendCanGive.map(s=>dealStickerRow('get',s)).join(''):'<div style="padding:12px;text-align:center;color:var(--text-3);font-size:12px">No hay coincidencias</div>'}</div><div id="deal-summary" style="margin-bottom:12px"></div><button class="btn-primary full" onclick="generateDealQR()" style="background:var(--blue);margin-bottom:8px">📤 Generar QR de propuesta</button><button class="btn-primary full" onclick="confirmDealDirectly()" style="background:var(--green-ok)">✅ Confirmar canje ahora (sin QR)</button></div>`;
   updateDealSummary();
 }
-
-function dealStickerRow(side, s) {
-  const sel = side === 'give' ? dealGive.includes(s.code) : dealGet.includes(s.code);
-  const bg = sel ? (side==='give'?'rgba(232,16,42,0.15)':'rgba(0,200,100,0.15)') : 'transparent';
-  return `<div id="deal-row-${side}-${s.code}" onclick="toggleDealSticker('${side}','${s.code}')"
-    style="display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border);background:${bg};-webkit-tap-highlight-color:transparent">
-    <span style="font-size:18px">${sel?'☑':'☐'}</span>
-    <div>
-      <div style="font-size:11px;font-weight:700;color:var(--blue)">${s.code}</div>
-      <div style="font-size:13px;color:var(--text)">${s.name}</div>
-    </div>
-  </div>`;
+function dealStickerRow(side,s) {
+  const sel=side==='give'?dealGive.includes(s.code):dealGet.includes(s.code);
+  const bg=sel?(side==='give'?'rgba(232,16,42,0.15)':'rgba(0,200,100,0.15)'):'transparent';
+  return `<div id="deal-row-${side}-${s.code}" onclick="toggleDealSticker('${side}','${s.code}')" style="display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border);background:${bg}"><span style="font-size:18px">${sel?'☑':'☐'}</span><div><div style="font-size:11px;font-weight:700;color:var(--blue)">${s.code}</div><div style="font-size:13px;color:var(--text)">${s.name}</div></div></div>`;
 }
-
-function toggleDealSticker(side, code) {
-  const list = side === 'give' ? dealGive : dealGet;
-  const idx = list.indexOf(code);
-  if (idx >= 0) list.splice(idx, 1);
-  else list.push(code);
-  // Update row background
-  const row = document.getElementById(`deal-row-${side}-${code}`);
-  if (row) {
-    const sel = idx < 0; // now selected
-    row.style.background = sel ? (side==='give'?'rgba(232,16,42,0.15)':'rgba(0,200,100,0.15)') : 'transparent';
-    row.querySelector('span').textContent = sel ? '☑' : '☐';
-  }
+function toggleDealSticker(side,code) {
+  const list=side==='give'?dealGive:dealGet;
+  const idx=list.indexOf(code);
+  if(idx>=0)list.splice(idx,1); else list.push(code);
+  const row=document.getElementById(`deal-row-${side}-${code}`);
+  if(row){const sel=idx<0;row.style.background=sel?(side==='give'?'rgba(232,16,42,0.15)':'rgba(0,200,100,0.15)'):'transparent';row.querySelector('span').textContent=sel?'☑':'☐';}
   updateDealSummary();
 }
-
 function updateDealSummary() {
-  const el = document.getElementById('deal-summary');
-  if (!el) return;
-  if (!dealGive.length && !dealGet.length) { el.innerHTML = ''; return; }
-  el.innerHTML = `<div style="background:var(--bg-card2);border-radius:8px;padding:10px 12px;font-size:12px">
-    <div style="color:var(--red);margin-bottom:4px">📤 Doy: <b>${dealGive.length ? dealGive.join(', ') : '—'}</b></div>
-    <div style="color:var(--green-ok)">📥 Recibo: <b>${dealGet.length ? dealGet.join(', ') : '—'}</b></div>
-  </div>`;
+  const el=document.getElementById('deal-summary'); if(!el)return;
+  if(!dealGive.length&&!dealGet.length){el.innerHTML='';return;}
+  el.innerHTML=`<div style="background:var(--bg-card2);border-radius:8px;padding:10px 12px;font-size:12px"><div style="color:var(--red);margin-bottom:4px">📤 Doy: <b>${dealGive.join(', ')||'—'}</b></div><div style="color:var(--green-ok)">📥 Recibo: <b>${dealGet.join(', ')||'—'}</b></div></div>`;
 }
-
 function generateDealQR() {
-  if (!dealGive.length && !dealGet.length) { toast('Seleccioná al menos una figurita'); return; }
-  const encoded = encodeDeal(dealGive, dealGet);
-  const body = document.getElementById('canje-qr-body');
-  body.innerHTML = `
-    <div style="text-align:center;padding:1rem">
-      <div style="font-size:13px;color:var(--text-2);margin-bottom:8px;line-height:1.5">
-        <b>Paso 1:</b> Mostrále este QR a tu amigo para que lo escanee y acepte.<br>
-        <b>Doy:</b> ${dealGive.join(', ')||'—'}<br>
-        <b>Recibo:</b> ${dealGet.join(', ')||'—'}
-      </div>
-      <div id="qr-wrap" style="display:inline-block;background:#fff;padding:14px;border-radius:12px;margin-bottom:8px">
-        <canvas id="qr-canvas" width="220" height="220"></canvas>
-      </div>
-      <div style="font-size:12px;color:var(--text-3);margin-bottom:12px">Tu amigo escanea esto para aceptar</div>
-      <div style="background:var(--bg-card2);border-radius:10px;padding:12px;margin-bottom:12px;font-size:13px;color:var(--text-2);line-height:1.5">
-        <b>Paso 2:</b> Cuando tu amigo acepte, él va a generar un QR de confirmación.<br>
-        Escanealo con el botón de abajo para aplicar el canje en tu álbum.
-      </div>
-      <button class="btn-primary full" onclick="switchQRTab('scan')" style="background:var(--blue);margin-bottom:8px">
-        📷 Escanear confirmación del amigo
-      </button>
-      <button class="btn-primary full" onclick="switchQRTab('deal')" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border)">
-        ← Modificar propuesta
-      </button>
-    </div>`;
-  setTimeout(() => drawQROnCanvas('qr-canvas', encoded), 100);
+  if(!dealGive.length&&!dealGet.length){toast('Seleccioná al menos una figurita');return;}
+  const encoded=encodeDeal(dealGive,dealGet);
+  const body=document.getElementById('canje-qr-body');
+  body.innerHTML=`<div style="text-align:center;padding:1rem"><div style="font-size:13px;color:var(--text-2);margin-bottom:8px;line-height:1.5"><b>Paso 1:</b> Mostrále este QR a tu amigo.<br><b>Doy:</b> ${dealGive.join(', ')||'—'}<br><b>Recibo:</b> ${dealGet.join(', ')||'—'}</div><div id="qr-wrap" style="display:inline-block;background:#fff;padding:14px;border-radius:12px;margin-bottom:8px"><canvas id="qr-canvas" width="220" height="220"></canvas></div><div style="font-size:12px;color:var(--text-3);margin-bottom:12px">Tu amigo escanea esto para aceptar</div><div style="background:var(--bg-card2);border-radius:10px;padding:12px;margin-bottom:12px;font-size:13px;color:var(--text-2);line-height:1.5"><b>Paso 2:</b> Cuando tu amigo acepte, él genera un QR de confirmación. Escanealo abajo.</div><button class="btn-primary full" onclick="switchQRTab('scan')" style="background:var(--blue);margin-bottom:8px">📷 Escanear confirmación</button><button class="btn-primary full" onclick="switchQRTab('deal')" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border)">← Modificar</button></div>`;
+  setTimeout(()=>drawQROnCanvas('qr-canvas',encoded),100);
 }
-
 function showDealConfirmation(deal) {
-  pendingDeal = deal; // Store in global — no need to pass via onclick
-  const body = document.getElementById('canje-qr-body');
-  body.innerHTML = `
-    <div style="padding:1rem">
-      <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:12px">🤝 Propuesta de canje recibida</div>
-      <div style="background:var(--bg-card2);border-radius:10px;padding:12px;margin-bottom:14px">
-        <div style="font-size:12px;color:var(--green-ok);margin-bottom:6px;font-weight:700">
-          📥 Vos recibís: <span style="color:var(--text)">${deal.give.join(', ')||'—'}</span>
-        </div>
-        <div style="font-size:12px;color:var(--red);font-weight:700">
-          📤 Vos das: <span style="color:var(--text)">${deal.get.join(', ')||'—'}</span>
-        </div>
-      </div>
-      <button class="btn-primary full" onclick="acceptAndShowConfirmQR()" style="background:var(--green-ok);margin-bottom:8px">
-        ✅ Aceptar y generar QR de confirmación
-      </button>
-      <button class="btn-primary full" onclick="switchQRTab('scan')" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border)">
-        ✕ Rechazar
-      </button>
-    </div>`;
+  pendingDeal=deal;
+  const body=document.getElementById('canje-qr-body');
+  body.innerHTML=`<div style="padding:1rem"><div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:12px">🤝 Propuesta de canje recibida</div><div style="background:var(--bg-card2);border-radius:10px;padding:12px;margin-bottom:14px"><div style="font-size:12px;color:var(--green-ok);margin-bottom:6px;font-weight:700">📥 Vos recibís: <span style="color:var(--text)">${deal.give.join(', ')||'—'}</span></div><div style="font-size:12px;color:var(--red);font-weight:700">📤 Vos das: <span style="color:var(--text)">${deal.get.join(', ')||'—'}</span></div></div><button class="btn-primary full" onclick="acceptAndShowConfirmQR()" style="background:var(--green-ok);margin-bottom:8px">✅ Aceptar y generar QR de confirmación</button><button class="btn-primary full" onclick="switchQRTab('scan')" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border)">✕ Rechazar</button></div>`;
   stopQRScan();
 }
-
 function acceptAndShowConfirmQR() {
-  const deal = pendingDeal;
-  if (!deal) { toast('Error: no hay propuesta pendiente'); return; }
-  // Apply deal to my album but keep modal open
-  applyDeal(deal.get, deal.give, 'Canje vía QR (aceptado)', true);
-  // Generate confirmation QR — flipped so proposer applies their side correctly
-  const confirmEncoded = encodeDeal(deal.get, deal.give);
-  const body = document.getElementById('canje-qr-body');
-  body.innerHTML = `
-    <div style="text-align:center;padding:1rem">
-      <div style="font-size:13px;color:var(--green-ok);font-weight:700;margin-bottom:8px">✅ Canje aplicado en tu álbum</div>
-      <div style="font-size:13px;color:var(--text-2);margin-bottom:12px;line-height:1.5">
-        Ahora mostrále este QR al que propuso el canje para que lo confirme en su álbum.
-      </div>
-      <div id="qr-wrap" style="display:inline-block;background:#fff;padding:14px;border-radius:12px;margin-bottom:8px">
-        <canvas id="qr-canvas" width="220" height="220"></canvas>
-      </div>
-      <div style="font-size:12px;color:var(--text-3)">El proponente escanea esto para confirmar</div>
-    </div>`;
-  setTimeout(() => drawQROnCanvas('qr-canvas', confirmEncoded), 100);
+  const deal=pendingDeal; if(!deal){toast('Error');return;}
+  applyDeal(deal.get,deal.give,'Canje vía QR (aceptado)',true);
+  const confirmEncoded=encodeDeal(deal.get,deal.give);
+  const body=document.getElementById('canje-qr-body');
+  body.innerHTML=`<div style="text-align:center;padding:1rem"><div style="font-size:13px;color:var(--green-ok);font-weight:700;margin-bottom:8px">✅ Canje aplicado en tu álbum</div><div style="font-size:13px;color:var(--text-2);margin-bottom:12px">Mostrále este QR al que propuso el canje.</div><div id="qr-wrap" style="display:inline-block;background:#fff;padding:14px;border-radius:12px;margin-bottom:8px"><canvas id="qr-canvas" width="220" height="220"></canvas></div></div>`;
+  setTimeout(()=>drawQROnCanvas('qr-canvas',confirmEncoded),100);
 }
-
-function acceptDeal(deal) {
-  applyDeal(deal.get, deal.give, 'Canje vía QR (aceptado)', false);
-}
-
+function acceptDeal(deal) { applyDeal(deal.get,deal.give,'Canje vía QR (aceptado)',false); }
 function confirmDealDirectly() {
-  if (!dealGive.length && !dealGet.length) { toast('Seleccioná figuritas primero'); return; }
-  applyDeal(dealGive, dealGet, 'Canje vía QR');
+  if(!dealGive.length&&!dealGet.length){toast('Seleccioná figuritas primero');return;}
+  applyDeal(dealGive,dealGet,'Canje vía QR');
 }
-
-function applyDeal(give, get, nota, noClose) {
-  // Resolve codes to keys
-  const myIdx = buildStickerIndex();
-  const findKey = code => myIdx.find(s => s.code === code)?.key || code;
-
-  const giveItems = give.map(code => ({ key: findKey(code), name: code }));
-  const getItems  = get.map(code => ({ key: findKey(code), name: code }));
-
-  // Update stock
-  giveItems.forEach(s => { stickers[s.key] = Math.max(0, cnt(s.key) - 1); });
-  getItems.forEach(s  => { stickers[s.key] = cnt(s.key) + 1; });
+function applyDeal(give,get,nota,noClose) {
+  const myIdx=buildStickerIndex();
+  const findKey=code=>myIdx.find(s=>s.code===code)?.key||code;
+  const giveItems=give.map(code=>({key:findKey(code),name:code}));
+  const getItems=get.map(code=>({key:findKey(code),name:code}));
+  giveItems.forEach(s=>{stickers[s.key]=Math.max(0,cnt(s.key)-1);});
+  getItems.forEach(s=>{stickers[s.key]=cnt(s.key)+1;});
   save();
-
-  // Register in costos
-  pushMov({ tipo:'canje', give: giveItems, get: getItems, nota });
-
+  pushMov({tipo:'canje',give:giveItems,get:getItems,nota});
   toast(`Canje registrado ✓ · Diste ${give.length} · Recibiste ${get.length}`);
-  if (!noClose) {
-    closeCanjeQR();
-    renderTab(activeTab);
-  }
+  if(!noClose){closeCanjeQR();renderTab(activeTab);}
 }
-
-// ── QR DRAWING ────────────────────────────────────────────────
-function drawQROnCanvas(canvasId, text) {
-  const canvas = document.getElementById(canvasId);
-  if (!canvas) return;
-  const wrap = canvas.parentElement;
-  
-  // Always use qrserver.com — generates real scannable QR image
-  canvas.style.display = 'none';
-  const existing = wrap.querySelector('.qr-api-img');
-  if (existing) existing.remove();
-  
-  const img = document.createElement('img');
-  img.className = 'qr-api-img';
-  img.style.cssText = 'width:220px;height:220px;border-radius:8px;display:block;margin:0 auto';
-  img.alt = 'QR Code';
-  
-  const encoded = encodeURIComponent(text);
-  img.src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encoded}&color=0A0F2C&bgcolor=FFFFFF&margin=10`;
-  
-  img.onload = () => {
-    const t = document.getElementById('qr-timer-text');
-    if (t) t.textContent = 'QR listo — mostráselo a tu amigo';
-  };
-  img.onerror = () => {
-    // Fallback to embedded lib if no internet
-    canvas.style.display = 'block';
-    if (window.qrcode) { try { _drawQRWithLib(canvas, text); } catch(e) { _drawQRManual(canvas, text); } }
-    else { _drawQRManual(canvas, text); }
-  };
+function drawQROnCanvas(canvasId,text) {
+  const canvas=document.getElementById(canvasId); if(!canvas)return;
+  const wrap=canvas.parentElement;
+  // Remove any previous API image
+  const existing=wrap.querySelector('.qr-api-img'); if(existing)existing.remove();
+  // Try embedded lib first (works offline)
+  if(window.qrcode) {
+    try { canvas.style.display='block'; _drawQRWithLib(canvas,text); const t=document.getElementById('qr-timer-text');if(t)t.textContent='QR listo — mostráselo a tu amigo'; return; } catch(e) {}
+  }
+  // Fallback: qrserver.com API
+  canvas.style.display='none';
+  const img=document.createElement('img');
+  img.className='qr-api-img';
+  img.style.cssText='width:220px;height:220px;border-radius:8px;display:block;margin:0 auto';
+  img.src=`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(text)}&color=0A0F2C&bgcolor=FFFFFF&margin=10`;
+  img.onload=()=>{const t=document.getElementById('qr-timer-text');if(t)t.textContent='QR listo — mostráselo a tu amigo';};
+  img.onerror=()=>{canvas.style.display='block';_drawQRManual(canvas,text);};
   wrap.appendChild(img);
 }
-
-function _drawQRWithLib(canvas, text) {
+function _drawQRWithLib(canvas,text) {
   try {
-    // Try auto version first, fall back to higher ECC levels if too much data
-    let qr;
-    for (const ecc of ['M','L']) {
-      try {
-        qr = qrcode(0, ecc);
-        qr.addData(text);
-        qr.make();
-        break;
-      } catch(e) { qr = null; }
-    }
-    if (!qr) { _drawQRManual(canvas, text); return; }
-    const size=220, ctx=canvas.getContext('2d'), mod=qr.getModuleCount(), cell=size/mod;
-    canvas.width=size; canvas.height=size;
-    ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,size,size);
-    ctx.fillStyle='#0A0F2C';
-    for(let r=0;r<mod;r++) for(let c=0;c<mod;c++) if(qr.isDark(r,c)) ctx.fillRect(Math.floor(c*cell),Math.floor(r*cell),Math.ceil(cell+.5),Math.ceil(cell+.5));
-  } catch(e) { _drawQRManual(canvas, text); }
+    let qr; for(const ecc of ['M','L']){try{qr=qrcode(0,ecc);qr.addData(text);qr.make();break;}catch(e){qr=null;}}
+    if(!qr){_drawQRManual(canvas,text);return;}
+    const size=220,ctx=canvas.getContext('2d'),mod=qr.getModuleCount(),cell=size/mod;
+    canvas.width=size;canvas.height=size;ctx.fillStyle='#fff';ctx.fillRect(0,0,size,size);ctx.fillStyle='#0A0F2C';
+    for(let r=0;r<mod;r++)for(let c=0;c<mod;c++)if(qr.isDark(r,c))ctx.fillRect(Math.floor(c*cell),Math.floor(r*cell),Math.ceil(cell+.5),Math.ceil(cell+.5));
+  }catch(e){_drawQRManual(canvas,text);}
 }
-function _drawQRManual(canvas, text) {
-  const size=220, ctx=canvas.getContext('2d');
-  canvas.width=size; canvas.height=size;
-  ctx.fillStyle='#fff'; ctx.fillRect(0,0,size,size);
-  ctx.fillStyle='#0A0F2C'; ctx.font='bold 13px sans-serif'; ctx.textAlign='center';
-  ctx.fillText('Código de canje:', size/2, 80);
-  ctx.font='bold 18px monospace'; ctx.fillStyle='#1B4FD8';
-  const short = text.length > 30 ? text.substring(0,30)+'...' : text;
-  ctx.fillText(short, size/2, 120);
+function _drawQRManual(canvas,text) {
+  const size=220,ctx=canvas.getContext('2d');
+  canvas.width=size;canvas.height=size;ctx.fillStyle='#fff';ctx.fillRect(0,0,size,size);
+  ctx.fillStyle='#0A0F2C';ctx.font='bold 13px sans-serif';ctx.textAlign='center';
+  ctx.fillText('Código:',size/2,80);ctx.font='bold 14px monospace';ctx.fillStyle='#1B4FD8';
+  ctx.fillText(text.substring(0,30),size/2,110);
 }
+
+// ── getCrackKey ───────────────────────────────────────────────
+function getCrackKey(item) {
+  const code=(item.code||item.realCode||'').toUpperCase();
+  const team=ALBUM_DATA.teams.find(t=>code.startsWith(t.flag.toUpperCase()));
+  if(!team)return null;
+  const numStr=code.substring(team.flag.length);
+  const pIdx=team.players.findIndex(p=>p.num==parseInt(numStr,10)||String(p.num)===numStr);
+  return pIdx>=0?k(team.name,pIdx):null;
+}
+
+// ── renderTile keyOverride ────────────────────────────────────
 
 
 // ── CONFIRM MODAL ────────────────────────────────────────────
@@ -2035,6 +1775,178 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-del').addEventListener('click', pinDel);
   initLogin();
 });
+
+function setupSecurityQuestion() {
+  const body = document.getElementById('pin-recovery-body');
+  document.getElementById('modal-pin-recovery').style.display = 'flex';
+  body.innerHTML = `
+    <div style="font-size:13px;color:var(--text-2);margin-bottom:14px;line-height:1.5">
+      Configurá una pregunta de seguridad para poder recuperar tu PIN si lo olvidás.
+    </div>
+    <div class="form-group">
+      <label>Pregunta de seguridad</label>
+      <select id="security-q" style="width:100%;padding:10px 12px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:13px;outline:none">
+        ${SECURITY_QUESTIONS.map((q,i) => `<option value="${i}">${q}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Tu respuesta</label>
+      <input type="text" id="security-a" placeholder="Respuesta..." autocomplete="off"
+        style="width:100%;padding:10px 12px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:14px;outline:none">
+    </div>
+    <button class="btn-primary full" onclick="saveSecurityQuestion()">Guardar</button>
+    <button class="btn-primary full" onclick="closePinRecovery()" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border);margin-top:8px">Ahora no</button>
+  `;
+}
+
+function saveSecurityQuestion() {
+  const qIdx = document.getElementById('security-q').value;
+  const answer = document.getElementById('security-a').value.trim();
+  if (!answer) { toast('Escribí una respuesta'); return; }
+  localStorage.setItem('m26v2_security_question', SECURITY_QUESTIONS[qIdx]);
+  localStorage.setItem('m26v2_security_answer', answer.toLowerCase());
+  closePinRecovery();
+  toast('Pregunta de seguridad guardada ✓');
+}
+
+// ══════════════════════════════════════════════════════════════
+//  CANJE QR ENTRE AMIGOS
+// ══════════════════════════════════════════════════════════════
+
+
+// ── PIN RECOVERY ──────────────────────────────────────────────
+function openPinRecovery() {
+  const body=document.getElementById('pin-recovery-body');
+  document.getElementById('modal-pin-recovery').style.display='flex';
+  const hasAnswer=localStorage.getItem('m26v2_security_answer');
+  if (!hasAnswer) {
+    body.innerHTML=`<div style="text-align:center;padding:1rem 0"><div style="font-size:40px;margin-bottom:12px">😕</div><div style="font-size:14px;color:var(--text);margin-bottom:8px;font-weight:600">No configuraste una pregunta de seguridad</div><button class="btn-primary full" onclick="exportAndReset()" style="background:var(--blue);margin-bottom:8px">📤 Exportar datos y cambiar PIN</button><button class="btn-primary full" onclick="resetAllData()" style="background:var(--red);margin-bottom:8px">🗑 Resetear todo</button><button class="btn-primary full" onclick="closePinRecovery()" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border)">Cancelar</button></div>`;
+    return;
+  }
+  const q=localStorage.getItem('m26v2_security_question')||'';
+  body.innerHTML=`<div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:10px">${q}</div><div class="form-group"><input type="text" id="recovery-answer" placeholder="Tu respuesta..." style="width:100%;padding:10px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:14px;outline:none"></div><div id="recovery-error" style="color:var(--red);font-size:13px;margin-bottom:8px;display:none">Respuesta incorrecta</div><button class="btn-primary full" onclick="verifySecurityAnswer()">Verificar</button><button class="btn-primary full" onclick="closePinRecovery()" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border);margin-top:8px">Cancelar</button>`;
+  setTimeout(()=>document.getElementById('recovery-answer')?.focus(),100);
+}
+function verifySecurityAnswer() {
+  const input=document.getElementById('recovery-answer').value.trim().toLowerCase();
+  const stored=(localStorage.getItem('m26v2_security_answer')||'').toLowerCase();
+  if(input===stored){
+    const pin=localStorage.getItem('m26v2_pin')||'';
+    document.getElementById('pin-recovery-body').innerHTML=`<div style="text-align:center;padding:1rem 0"><div style="font-size:48px;font-weight:800;letter-spacing:16px;color:var(--blue);margin-bottom:20px">${pin}</div><button class="btn-primary full" onclick="closePinRecovery()">Entendido</button></div>`;
+  } else {
+    document.getElementById('recovery-error').style.display='block';
+  }
+}
+function closePinRecovery() { document.getElementById('modal-pin-recovery').style.display='none'; }
+function exportAndReset() {
+  const raw={}; for(let i=0;i<localStorage.length;i++){const key=localStorage.key(i);if(key)raw[key]=localStorage.getItem(key);}
+  const code=btoa(unescape(encodeURIComponent(JSON.stringify(raw))));
+  document.getElementById('pin-recovery-body').innerHTML=`<div style="padding:.5rem 0"><div style="font-size:13px;color:var(--text-2);margin-bottom:10px">Copiá este código antes de resetear:</div><textarea readonly onclick="this.select()" style="width:100%;height:90px;padding:8px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:10px;font-family:monospace;resize:none;outline:none">${code}</textarea><button class="btn-primary full" onclick="resetPinOnly()" style="background:var(--green-ok);margin-top:8px;margin-bottom:6px">🔑 Resetear solo el PIN</button><button class="btn-primary full" onclick="closePinRecovery()" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border)">Cancelar</button></div>`;
+}
+function resetPinOnly() { localStorage.removeItem('m26v2_pin');localStorage.removeItem('m26v2_security_question');localStorage.removeItem('m26v2_security_answer');closePinRecovery();location.reload(); }
+function resetAllData() { localStorage.clear();location.reload(); }
+
+function saveSecurityQuestion() {
+  const qIdx = document.getElementById('security-q').value;
+  const answer = document.getElementById('security-a').value.trim();
+  if (!answer) { toast('Escribí una respuesta'); return; }
+  localStorage.setItem('m26v2_security_question', SECURITY_QUESTIONS[qIdx]);
+  localStorage.setItem('m26v2_security_answer', answer.toLowerCase());
+  closePinRecovery();
+  toast('Pregunta de seguridad guardada ✓');
+}
+
+// ══════════════════════════════════════════════════════════════
+//  CANJE QR ENTRE AMIGOS
+// ══════════════════════════════════════════════════════════════
+
+
 if('serviceWorker' in navigator){window.addEventListener('load',()=>{navigator.serviceWorker.register('/sw.js').catch(()=>{});});}
+
+
+function setupSecurityQuestion() {
+  const body = document.getElementById('pin-recovery-body');
+  document.getElementById('modal-pin-recovery').style.display = 'flex';
+  body.innerHTML = `
+    <div style="font-size:13px;color:var(--text-2);margin-bottom:14px;line-height:1.5">
+      Configurá una pregunta de seguridad para poder recuperar tu PIN si lo olvidás.
+    </div>
+    <div class="form-group">
+      <label>Pregunta de seguridad</label>
+      <select id="security-q" style="width:100%;padding:10px 12px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:13px;outline:none">
+        ${SECURITY_QUESTIONS.map((q,i) => `<option value="${i}">${q}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Tu respuesta</label>
+      <input type="text" id="security-a" placeholder="Respuesta..." autocomplete="off"
+        style="width:100%;padding:10px 12px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:14px;outline:none">
+    </div>
+    <button class="btn-primary full" onclick="saveSecurityQuestion()">Guardar</button>
+    <button class="btn-primary full" onclick="closePinRecovery()" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border);margin-top:8px">Ahora no</button>
+  `;
+}
+
+function saveSecurityQuestion() {
+  const qIdx = document.getElementById('security-q').value;
+  const answer = document.getElementById('security-a').value.trim();
+  if (!answer) { toast('Escribí una respuesta'); return; }
+  localStorage.setItem('m26v2_security_question', SECURITY_QUESTIONS[qIdx]);
+  localStorage.setItem('m26v2_security_answer', answer.toLowerCase());
+  closePinRecovery();
+  toast('Pregunta de seguridad guardada ✓');
+}
+
+// ══════════════════════════════════════════════════════════════
+//  CANJE QR ENTRE AMIGOS
+// ══════════════════════════════════════════════════════════════
+
+
+// ── PIN RECOVERY ──────────────────────────────────────────────
+function openPinRecovery() {
+  const body=document.getElementById('pin-recovery-body');
+  document.getElementById('modal-pin-recovery').style.display='flex';
+  const hasAnswer=localStorage.getItem('m26v2_security_answer');
+  if (!hasAnswer) {
+    body.innerHTML=`<div style="text-align:center;padding:1rem 0"><div style="font-size:40px;margin-bottom:12px">😕</div><div style="font-size:14px;color:var(--text);margin-bottom:8px;font-weight:600">No configuraste una pregunta de seguridad</div><button class="btn-primary full" onclick="exportAndReset()" style="background:var(--blue);margin-bottom:8px">📤 Exportar datos y cambiar PIN</button><button class="btn-primary full" onclick="resetAllData()" style="background:var(--red);margin-bottom:8px">🗑 Resetear todo</button><button class="btn-primary full" onclick="closePinRecovery()" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border)">Cancelar</button></div>`;
+    return;
+  }
+  const q=localStorage.getItem('m26v2_security_question')||'';
+  body.innerHTML=`<div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:10px">${q}</div><div class="form-group"><input type="text" id="recovery-answer" placeholder="Tu respuesta..." style="width:100%;padding:10px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:14px;outline:none"></div><div id="recovery-error" style="color:var(--red);font-size:13px;margin-bottom:8px;display:none">Respuesta incorrecta</div><button class="btn-primary full" onclick="verifySecurityAnswer()">Verificar</button><button class="btn-primary full" onclick="closePinRecovery()" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border);margin-top:8px">Cancelar</button>`;
+  setTimeout(()=>document.getElementById('recovery-answer')?.focus(),100);
+}
+function verifySecurityAnswer() {
+  const input=document.getElementById('recovery-answer').value.trim().toLowerCase();
+  const stored=(localStorage.getItem('m26v2_security_answer')||'').toLowerCase();
+  if(input===stored){
+    const pin=localStorage.getItem('m26v2_pin')||'';
+    document.getElementById('pin-recovery-body').innerHTML=`<div style="text-align:center;padding:1rem 0"><div style="font-size:48px;font-weight:800;letter-spacing:16px;color:var(--blue);margin-bottom:20px">${pin}</div><button class="btn-primary full" onclick="closePinRecovery()">Entendido</button></div>`;
+  } else {
+    document.getElementById('recovery-error').style.display='block';
+  }
+}
+function closePinRecovery() { document.getElementById('modal-pin-recovery').style.display='none'; }
+function exportAndReset() {
+  const raw={}; for(let i=0;i<localStorage.length;i++){const key=localStorage.key(i);if(key)raw[key]=localStorage.getItem(key);}
+  const code=btoa(unescape(encodeURIComponent(JSON.stringify(raw))));
+  document.getElementById('pin-recovery-body').innerHTML=`<div style="padding:.5rem 0"><div style="font-size:13px;color:var(--text-2);margin-bottom:10px">Copiá este código antes de resetear:</div><textarea readonly onclick="this.select()" style="width:100%;height:90px;padding:8px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-card2);color:var(--text);font-size:10px;font-family:monospace;resize:none;outline:none">${code}</textarea><button class="btn-primary full" onclick="resetPinOnly()" style="background:var(--green-ok);margin-top:8px;margin-bottom:6px">🔑 Resetear solo el PIN</button><button class="btn-primary full" onclick="closePinRecovery()" style="background:var(--bg-card2);color:var(--text);border:1.5px solid var(--border)">Cancelar</button></div>`;
+}
+function resetPinOnly() { localStorage.removeItem('m26v2_pin');localStorage.removeItem('m26v2_security_question');localStorage.removeItem('m26v2_security_answer');closePinRecovery();location.reload(); }
+function resetAllData() { localStorage.clear();location.reload(); }
+
+function saveSecurityQuestion() {
+  const qIdx = document.getElementById('security-q').value;
+  const answer = document.getElementById('security-a').value.trim();
+  if (!answer) { toast('Escribí una respuesta'); return; }
+  localStorage.setItem('m26v2_security_question', SECURITY_QUESTIONS[qIdx]);
+  localStorage.setItem('m26v2_security_answer', answer.toLowerCase());
+  closePinRecovery();
+  toast('Pregunta de seguridad guardada ✓');
+}
+
+// ══════════════════════════════════════════════════════════════
+//  CANJE QR ENTRE AMIGOS
+// ══════════════════════════════════════════════════════════════
+
 
 if('serviceWorker' in navigator){window.addEventListener('load',()=>{navigator.serviceWorker.register('./sw.js').catch(()=>{});});}
