@@ -1777,6 +1777,9 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function setupSecurityQuestion() {
+  // Close sidebar first
+  document.getElementById('sidebar')?.classList.remove('open');
+  document.getElementById('mobile-overlay')?.classList.remove('open');
   const body = document.getElementById('pin-recovery-body');
   document.getElementById('modal-pin-recovery').style.display = 'flex';
   body.innerHTML = `
@@ -1816,6 +1819,8 @@ function saveSecurityQuestion() {
 
 // ── PIN RECOVERY ──────────────────────────────────────────────
 function openPinRecovery() {
+  document.getElementById('sidebar')?.classList.remove('open');
+  document.getElementById('mobile-overlay')?.classList.remove('open');
   const body=document.getElementById('pin-recovery-body');
   document.getElementById('modal-pin-recovery').style.display='flex';
   const hasAnswer=localStorage.getItem('m26v2_security_answer');
@@ -1865,6 +1870,9 @@ if('serviceWorker' in navigator){window.addEventListener('load',()=>{navigator.s
 
 
 function setupSecurityQuestion() {
+  // Close sidebar first
+  document.getElementById('sidebar')?.classList.remove('open');
+  document.getElementById('mobile-overlay')?.classList.remove('open');
   const body = document.getElementById('pin-recovery-body');
   document.getElementById('modal-pin-recovery').style.display = 'flex';
   body.innerHTML = `
@@ -1904,6 +1912,8 @@ function saveSecurityQuestion() {
 
 // ── PIN RECOVERY ──────────────────────────────────────────────
 function openPinRecovery() {
+  document.getElementById('sidebar')?.classList.remove('open');
+  document.getElementById('mobile-overlay')?.classList.remove('open');
   const body=document.getElementById('pin-recovery-body');
   document.getElementById('modal-pin-recovery').style.display='flex';
   const hasAnswer=localStorage.getItem('m26v2_security_answer');
