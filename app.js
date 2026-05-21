@@ -1776,6 +1776,15 @@ document.addEventListener('DOMContentLoaded', () => {
   initLogin();
 });
 
+
+const SECURITY_QUESTIONS = [
+  '¿Cuál es el nombre de tu primera mascota?',
+  '¿En qué ciudad naciste?',
+  '¿Cuál es el nombre de tu mejor amigo de la infancia?',
+  '¿Cuál es tu equipo de fútbol favorito?',
+  '¿Cuál es el segundo nombre de tu mamá?',
+];
+
 function setupSecurityQuestion() {
   // Close sidebar first
   document.getElementById('sidebar')?.classList.remove('open');
@@ -1867,6 +1876,8 @@ function saveSecurityQuestion() {
 
 
 if('serviceWorker' in navigator){window.addEventListener('load',()=>{navigator.serviceWorker.register('/sw.js').catch(()=>{});});}
+
+
 
 
 function setupSecurityQuestion() {
